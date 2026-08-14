@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dual Weather & QWeather Pro"
+  short_description: "Fuse two weather sources with professional details"
+  default_prompt: "Use $dual-weather to compare weather sources and fetch only the professional details relevant to my question."

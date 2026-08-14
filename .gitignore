@@ -1,0 +1,9 @@
+node_modules/
+.tmp-openclaw-types/
+*.tgz
+.env
+.env.*
+!.env.example
+coverage/
+dist/
+.DS_Store

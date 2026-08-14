@@ -1,0 +1,25 @@
+{
+  "id": "dual-weather",
+  "name": "Dual Weather",
+  "description": "Geocode Chinese addresses and fuse QWeather with Caiyun weather data.",
+  "version": "0.8.0",
+  "skills": [
+    "./skills"
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "contracts": {
+    "tools": [
+      "geocode_address",
+      "qweather_location",
+      "qweather_professional",
+      "weather_service_status",
+      "qweather_account",
+      "dual_weather",
+      "weather_report",
+      "weather_details"
+    ]
+  }
+}
