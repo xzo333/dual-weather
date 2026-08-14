@@ -165,3 +165,7 @@ openclaw plugins install ./openclaw-dual-weather-0.8.0.tgz --force
 - 第三方和风 Skill：`yinguobing/qweather-skill`。参考 API Key/JWT 双认证、专属 Host、v7/v1 空气质量切换、预报范围和专业能力分层。
 
 第三方实现仅作为设计参考，没有复制其 GPL 源码。
+
+## 开源许可
+
+本项目使用 [MIT License](LICENSE)。

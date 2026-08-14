@@ -2,6 +2,7 @@
   "name": "openclaw-dual-weather",
   "version": "0.8.0",
   "description": "Give OpenClaw concise, cross-checked weather answers from QWeather and Caiyun, with professional details on demand.",
+  "license": "MIT",
   "type": "module",
   "main": "./index.ts",
   "files": [
