@@ -1,0 +1,41 @@
+{
+  "metadata": {
+    "tag": "fixture-alert-tag",
+    "zeroResult": false,
+    "attributions": [
+      "https://developer.qweather.com/attribution.html",
+      "https://example.test/alert-source"
+    ]
+  },
+  "alerts": [
+    {
+      "id": "cn-440300-20260815-001",
+      "senderName": "深圳市气象台",
+      "issuedTime": "2026-08-15T10:00+08:00",
+      "messageType": {
+        "code": "alert",
+        "supersedes": []
+      },
+      "eventType": {
+        "name": "暴雨",
+        "code": "1003"
+      },
+      "urgency": "immediate",
+      "severity": "severe",
+      "certainty": "likely",
+      "color": {
+        "code": "orange",
+        "red": 255,
+        "green": 165,
+        "blue": 0,
+        "alpha": 1
+      },
+      "effectiveTime": "2026-08-15T10:00+08:00",
+      "onsetTime": "2026-08-15T10:30+08:00",
+      "expireTime": "2026-08-15T16:00+08:00",
+      "headline": "深圳市暴雨橙色预警",
+      "description": "预计部分区域将出现强降雨。",
+      "instruction": "请远离低洼地带并关注官方更新。"
+    }
+  ]
+}

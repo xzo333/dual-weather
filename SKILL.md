@@ -19,6 +19,7 @@ Prefer the bundled `scripts/weather.py` adapter for common weather topics. It us
 - After geocoding, issue independent QWeather and Caiyun requests as parallel tool calls when the tool runtime supports parallel calls. A failure from one provider must not cancel the other provider.
 - Request only the endpoints and time range needed for the question. Do not download every available dataset by default.
 - Do not claim an observation, forecast, warning, typhoon impact, tide, or health conclusion that is absent from the returned JSON.
+- When QWeather alert data is shown, display the returned `alertMetadata.attributions` with the alert information. Do not remove provider attribution.
 
 ## Beginner setup
 
@@ -67,6 +68,8 @@ This key is optional for city and district queries. It is used for streets, comm
 6. Read the [official project and credential guide](https://dev.qweather.com/docs/configuration/project-and-key/) and [API Host guide](https://dev.qweather.com/docs/configuration/api-host/).
 
 Professional products such as solar radiation, station data, history, typhoon, and tide may require an eligible plan or additional permission. Do not promise that every account has access.
+
+`X-QW-Api-Key` remains supported by the APIs used here. QWeather recommends JWT for long-term production use and plans API Key daily-request restrictions beginning in 2027; keep JWT support as a future migration rather than treating the current API Key flow as invalid.
 
 ### 4. Apply for Caiyun App Key and App Secret
 
@@ -190,7 +193,7 @@ Use `QWEATHER_BASE_URL` as the host and send `X-QW-Api-Key: $QWEATHER_API_KEY` o
 | Next hours/rain timing | `/v7/weather/24h` or `/v7/weather/72h` | `hourly.json?hourlysteps=N` |
 | Daily forecast | `/v7/weather/3d`, `/7d`, `/10d`, `/15d`, or `/30d` | `daily.json?dailysteps=N` |
 | Next-two-hour rain | `/v7/minutely/5m` | `minutely.json` |
-| Weather alerts | `/v7/warning/now` | `realtime.json?alert=true` or `weather.json?alert=true` |
+| Weather alerts | `/weatheralert/v1/current/{lat}/{lng}` | `realtime.json?alert=true` or `weather.json?alert=true` |
 | Life indices | `/v7/indices/1d` or `/3d`, `type=0` | `result.realtime.life_index` |
 | Current air quality | `/airquality/v1/current/{lat}/{lng}` | `result.realtime.air_quality` |
 | Hourly/daily air | `/airquality/v1/hourly/{lat}/{lng}` or `/daily/{lat}/{lng}` | hourly/daily air-quality arrays when returned |
@@ -233,7 +236,9 @@ Generate the signature exactly as documented; prefer the bundled adapter instead
 
 ### Step 4: Validate and normalize
 
-Accept QWeather only when `code == "200"`. Accept Caiyun only when `status == "ok"` and `result` exists.
+For QWeather v7 and GeoAPI responses that include `code`, require `code == "200"`. For newer v1 responses such as Weather Alert and Air Quality, require successful HTTP status plus the documented top-level structure. Accept Caiyun only when `status == "ok"` and `result` exists.
+
+The QWeather Weather Alert v1 response does not use the old `code + warning[]` structure. Read `metadata` and `alerts[]`; preserve `senderName`, `eventType.name`, `severity`, `headline`, `description`, and `instruction`. Preserve `metadata.attributions` as `alertMetadata.attributions` and show it with any alert answer.
 
 Normalize before comparing:
 
@@ -242,6 +247,7 @@ Normalize before comparing:
 - QWeather precipitation amount: `precipitationAmount` in millimetres, rounded to two decimals.
 - Caiyun precipitation intensity under `unit=metric:v2`: `precipitationIntensity` in millimetres per hour. Do not label it as accumulated millimetres.
 - Probability: QWeather and Caiyun hourly probability are already `0` through `100`. Caiyun minutely probability is `0` through `1` and must be multiplied by `100`.
+- Caiyun daily precipitation probability has no unambiguous scale in the current public field documentation. Preserve it as `precipitationProbabilityRaw`; do not append `%` or multiply it until a real account response confirms the scale.
 - Wind: combine QWeather `windDir` and `windScale`; do not invent a Beaufort conversion.
 - Time: preserve provider timestamps and state the timezone if providers differ.
 - Air quality: identify the standard/provider; do not compare unlike AQI standards as if identical.
@@ -266,6 +272,7 @@ Map Caiyun Skycon codes:
 - For a default report, mention current condition, temperature/feels-like, near-term rain, meaningful provider disagreement, and active warnings.
 - Say “两家基本一致” only when the compared values actually agree. For temperature, a difference up to `1°C` is highly consistent, up to `2°C` is broadly consistent, and more than `2°C` is a meaningful difference.
 - If one provider fails, clearly label the answer as single-source. If both fail, give a concise setup or retry action.
+- When reporting QWeather alerts, include the returned attribution text or link near the alert summary.
 - Keep ordinary answers compact. Return detailed hourly, daily, radiation, pollutant, typhoon, or tide data only when asked.
 - Treat typhoon center distance as geometry, not landing probability or an evacuation instruction. Treat weather and health indices as reference information, not medical or emergency advice.
 

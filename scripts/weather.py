@@ -26,7 +26,7 @@ import uuid
 from typing import Any, Callable
 
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 RETRYABLE_HTTP = {429, 502, 503, 504}
 DEFAULT_TOPICS = ("current", "hourly", "minutely", "alerts")
 SUPPORTED_TOPICS = {
@@ -440,6 +440,17 @@ def qweather_geocode(address: str, timeout: float) -> dict[str, Any]:
     ]
     if not candidates:
         raise WeatherError("qweather-geo", "未找到匹配的城市或区县", "not_found")
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda pair: (-qweather_candidate_score(address, pair[1]), pair[0]),
+    )
+    candidates = [candidate for _, candidate in ranked]
+    top_score = qweather_candidate_score(address, candidates[0])
+    plausible = [
+        candidate
+        for candidate in candidates
+        if qweather_candidate_score(address, candidate) == top_score
+    ]
     item = candidates[0]
     lng = finite_number(item.get("lon"))
     lat = finite_number(item.get("lat"))
@@ -472,9 +483,9 @@ def qweather_geocode(address: str, timeout: float) -> dict[str, Any]:
         "lng": round(lng, 6),
         "lat": round(lat, 6),
     }
-    if len(candidates) > 1:
+    if len(plausible) > 1:
         result["ambiguous"] = True
-        result["candidateCount"] = len(candidates)
+        result["candidateCount"] = len(plausible)
         result["candidates"] = [
             clean_dict(
                 {
@@ -487,9 +498,41 @@ def qweather_geocode(address: str, timeout: float) -> dict[str, Any]:
                     "lat": number(candidate.get("lat"), 6),
                 }
             )
-            for candidate in candidates[:3]
+            for candidate in plausible[:3]
         ]
     return result
+
+
+PLACE_SUFFIXES = re.compile(
+    r"(特别行政区|壮族自治区|回族自治区|维吾尔自治区|自治区|自治州|自治县|省|市|区|县|州|盟)$"
+)
+
+
+def normalize_place_name(value: Any) -> str:
+    normalized = re.sub(r"\s+", "", text(value) or "")
+    previous = None
+    while normalized and normalized != previous:
+        previous = normalized
+        normalized = PLACE_SUFFIXES.sub("", normalized)
+    return normalized
+
+
+def qweather_candidate_score(query: str, candidate: dict[str, Any]) -> int:
+    normalized_query = normalize_place_name(query)
+    name = normalize_place_name(candidate.get("name"))
+    adm2 = normalize_place_name(candidate.get("adm2"))
+    adm1 = normalize_place_name(candidate.get("adm1"))
+    country = normalize_place_name(candidate.get("country"))
+    score = 0
+    if name and name in normalized_query:
+        score += 8
+    if adm2 and adm2 != name and adm2 in normalized_query:
+        score += 4
+    if adm1 and adm1 not in (name, adm2) and adm1 in normalized_query:
+        score += 2
+    if country and country not in (name, adm2, adm1) and country in normalized_query:
+        score += 1
+    return score
 
 
 DETAILED_ADDRESS_MARKERS = (
@@ -691,7 +734,11 @@ def qweather_tasks(
     if "minutely" in topics:
         add("minutely", "/v7/minutely/5m", {"location": location})
     if "alerts" in topics:
-        add("alerts", "/v7/warning/now", {"location": location})
+        add(
+            "alerts",
+            f"/weatheralert/v1/current/{q_lat}/{q_lng}",
+            {"localTime": "true", "lang": "zh"},
+        )
     if "indices" in topics:
         add(
             "indices",
@@ -841,20 +888,46 @@ def normalize_qweather(
             ],
         }
     if "alerts" in results:
+        raw_alerts = results["alerts"]
+        metadata = raw_alerts.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
         output["alerts"] = [
             clean_dict(
                 {
-                    "title": text(item.get("title")),
-                    "type": text(item.get("typeName")),
+                    "id": text(item.get("id")),
+                    "senderName": text(item.get("senderName")),
+                    "issuedTime": text(item.get("issuedTime")),
+                    "messageType": text((item.get("messageType") or {}).get("code")),
+                    "eventType": text((item.get("eventType") or {}).get("name")),
+                    "eventCode": text((item.get("eventType") or {}).get("code")),
+                    "urgency": text(item.get("urgency")),
                     "severity": text(item.get("severity")),
-                    "startTime": text(item.get("startTime")),
-                    "endTime": text(item.get("endTime")),
-                    "text": (text(item.get("text")) or "")[:300] or None,
+                    "certainty": text(item.get("certainty")),
+                    "color": text((item.get("color") or {}).get("code")),
+                    "effectiveTime": text(item.get("effectiveTime")),
+                    "onsetTime": text(item.get("onsetTime")),
+                    "expireTime": text(item.get("expireTime")),
+                    "headline": text(item.get("headline")),
+                    "description": (text(item.get("description")) or "")[:500] or None,
+                    "instruction": (text(item.get("instruction")) or "")[:500] or None,
                 }
             )
-            for item in array(results["alerts"].get("warning"))[:5]
+            for item in array(raw_alerts.get("alerts"))[:5]
             if isinstance(item, dict)
         ]
+        output["alertMetadata"] = clean_dict(
+            {
+                "tag": text(metadata.get("tag")),
+                "zeroResult": metadata.get("zeroResult")
+                if isinstance(metadata.get("zeroResult"), bool)
+                else None,
+                "attributions": [
+                    attribution
+                    for attribution in (text(value) for value in array(metadata.get("attributions")))
+                    if attribution
+                ],
+            }
+        )
     if "indices" in results:
         output["indices"] = [
             clean_dict(
@@ -1073,8 +1146,8 @@ def normalize_caiyun(
                     "temperatureAverage": number(item.get("avg")),
                     "temperatureMax": number(item.get("max")),
                     "weather": skycon(at(daily.get("skycon"), index).get("value")),
-                    "precipitationProbability": percent(
-                        at(daily.get("precipitation"), index).get("probability"), True
+                    "precipitationProbabilityRaw": number(
+                        at(daily.get("precipitation"), index).get("probability"), 3
                     ),
                     "precipitationIntensityAverage": number(
                         at(daily.get("precipitation"), index).get("avg"), 2
@@ -1327,6 +1400,7 @@ def command_query(args: argparse.Namespace) -> int:
             "precipitationAmount": "mm",
             "precipitationIntensity": "mm/h",
             "probability": "%",
+            "precipitationProbabilityRaw": "provider-defined",
             "radiation": "W/m²",
         },
     }
@@ -1397,14 +1471,46 @@ def command_self_test(args: argparse.Namespace) -> int:
                     "windDir": "西南风",
                     "windScale": "1-3级",
                 },
-            }
+            },
+            "alerts": {
+                "metadata": {
+                    "tag": "fixture-tag",
+                    "zeroResult": False,
+                    "attributions": ["https://developer.qweather.com/attribution.html"],
+                },
+                "alerts": [
+                    {
+                        "id": "alert-1",
+                        "senderName": "测试气象台",
+                        "issuedTime": "2026-08-15T10:00+08:00",
+                        "messageType": {"code": "alert"},
+                        "eventType": {"name": "暴雨", "code": "1003"},
+                        "severity": "severe",
+                        "headline": "暴雨预警",
+                        "description": "测试预警描述",
+                        "instruction": "注意防范",
+                    }
+                ],
+            },
         },
-        ("current",),
+        ("current", "alerts"),
         12,
         1,
     )
     expect(qweather["current"]["temperature"] == 33, "qweather current")
     expect(qweather["current"]["wind"] == "西南风 1-3级", "qweather wind")
+    expect(qweather["alerts"][0]["eventType"] == "暴雨", "qweather alert")
+    expect(bool(qweather["alertMetadata"]["attributions"]), "qweather alert attribution")
+
+    geo_candidates = [
+        {"name": "宝安区", "adm2": "深圳市", "adm1": "广东省"},
+        {"name": "深圳市", "adm2": "深圳市", "adm1": "广东省"},
+    ]
+    expect(
+        qweather_candidate_score("深圳市宝安区", geo_candidates[0])
+        > qweather_candidate_score("深圳市宝安区", geo_candidates[1]),
+        "qweather geo candidate ranking",
+    )
 
     caiyun = normalize_caiyun(
         {

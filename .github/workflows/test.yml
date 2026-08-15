@@ -1,0 +1,27 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile adapter
+        run: python -m py_compile scripts/weather.py
+      - name: Run built-in checks
+        run: python scripts/weather.py self-test --pretty
+      - name: Run API fixture tests
+        run: python -m unittest discover -s tests -v

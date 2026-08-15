@@ -1,0 +1,38 @@
+{
+  "code": "200",
+  "location": [
+    {
+      "name": "深圳市",
+      "id": "101280601",
+      "lat": "22.55",
+      "lon": "114.05",
+      "adm2": "深圳市",
+      "adm1": "广东省",
+      "country": "中国",
+      "tz": "Asia/Shanghai",
+      "rank": "10"
+    },
+    {
+      "name": "宝安区",
+      "id": "101280605",
+      "lat": "22.56",
+      "lon": "113.88",
+      "adm2": "深圳市",
+      "adm1": "广东省",
+      "country": "中国",
+      "tz": "Asia/Shanghai",
+      "rank": "25"
+    },
+    {
+      "name": "宝安镇",
+      "id": "fixture-other",
+      "lat": "30.00",
+      "lon": "110.00",
+      "adm2": "其他市",
+      "adm1": "其他省",
+      "country": "中国",
+      "tz": "Asia/Shanghai",
+      "rank": "80"
+    }
+  ]
+}

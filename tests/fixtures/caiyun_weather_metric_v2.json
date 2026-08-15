@@ -1,0 +1,62 @@
+{
+  "status": "ok",
+  "unit": "metric:v2",
+  "result": {
+    "forecast_keypoint": "未来两小时有短时小雨。",
+    "realtime": {
+      "temperature": 31.2,
+      "apparent_temperature": 34.5,
+      "skycon": "LIGHT_RAIN",
+      "humidity": 0.78,
+      "precipitation": {
+        "local": {
+          "intensity": 1.25
+        }
+      },
+      "air_quality": {
+        "aqi": {
+          "chn": 42
+        }
+      }
+    },
+    "hourly": {
+      "temperature": [
+        {
+          "datetime": "2026-08-15T12:00+08:00",
+          "value": 31
+        }
+      ],
+      "precipitation": [
+        {
+          "datetime": "2026-08-15T12:00+08:00",
+          "value": 0.8,
+          "probability": 1
+        }
+      ]
+    },
+    "daily": {
+      "temperature": [
+        {
+          "date": "2026-08-15T00:00+08:00",
+          "min": 27,
+          "avg": 30,
+          "max": 34
+        }
+      ],
+      "precipitation": [
+        {
+          "date": "2026-08-15T00:00+08:00",
+          "min": 0,
+          "avg": 0.4,
+          "max": 1.8,
+          "probability": 0.25
+        }
+      ]
+    },
+    "minutely": {
+      "description": "未来两小时有短时小雨。",
+      "precipitation_2h": [0.1, 0.2, 0.3],
+      "probability": [1, 0.25, 0, 0]
+    }
+  }
+}
