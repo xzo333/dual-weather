@@ -1,0 +1,4 @@
+node_modules/
+.tmp-openclaw-types/
+*.tgz
+.env
