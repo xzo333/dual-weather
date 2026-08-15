@@ -2,3 +2,5 @@ node_modules/
 .tmp-openclaw-types/
 *.tgz
 .env
+__pycache__/
+*.pyc

@@ -2,7 +2,7 @@
 
 一个轻量的 OpenClaw Skill。用户提供详细地址时，它会先通过高德解析坐标；已有坐标或同一会话继续追问时则直接复用。随后根据问题并行调用和风天气与彩云天气官方 API，查询该位置附近的天气详情并进行双源比较。
 
-本项目只有一个运行时文件：`SKILL.md`。不依赖 MCP、Plugin、Node.js、Python 或 npm 包；`scripts/` 不是必需项，所以当前没有创建。README 只用于 GitHub 首页和新人安装引导。
+本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、超时重试、字段归一化和紧凑 JSON 输出。不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。
 
 ## 能做什么
 
@@ -19,28 +19,25 @@
 
 ## 安装
 
-OpenClaw Skill 是一个目录，目录内必须有 `SKILL.md`。可以直接下载本文件，也可以克隆仓库。
+OpenClaw Skill 是一个目录，目录内必须有 `SKILL.md`。推荐直接克隆仓库，这样会同时获得 Python 适配器。
 
-### 直接下载
+### 克隆安装
 
 macOS/Linux：
 
 ```bash
-mkdir -p ~/.openclaw/skills/dual-weather
-curl -fsSL https://raw.githubusercontent.com/xzo333/openclaw-dual-weather/main/SKILL.md \
-  -o ~/.openclaw/skills/dual-weather/SKILL.md
+git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git \
+  ~/.openclaw/skills/dual-weather
 ```
 
 Windows PowerShell：
 
 ```powershell
-New-Item -ItemType Directory -Force "$HOME/.openclaw/skills/dual-weather" | Out-Null
-Invoke-WebRequest `
-  "https://raw.githubusercontent.com/xzo333/openclaw-dual-weather/main/SKILL.md" `
-  -OutFile "$HOME/.openclaw/skills/dual-weather/SKILL.md"
+git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git `
+  "$HOME/.openclaw/skills/dual-weather"
 ```
 
-也可以从 [v0.9.0 Release](https://github.com/xzo333/openclaw-dual-weather/releases/tag/v0.9.0) 下载 `SKILL.md`。
+Python 3.10+ 为推荐运行环境，但无需执行 `pip install`。如果机器没有 Python，Skill 会退回 curl 方式。
 
 安装后新建聊天会话：
 
@@ -55,6 +52,40 @@ openclaw gateway restart
 ```
 
 OpenClaw 会从工作区 `skills/`、用户管理目录和其他配置目录加载 Skill；同名 Skill 优先使用工作区版本。
+
+## Python 适配器
+
+检查配置，不显示密钥内容：
+
+```bash
+python scripts/weather.py check --pretty
+```
+
+按详细地址查询：
+
+```bash
+python scripts/weather.py query \
+  --address "深圳市宝安区" \
+  --topics current,hourly,minutely,alerts \
+  --pretty
+```
+
+复用经纬度查询空气质量和辐照：
+
+```bash
+python scripts/weather.py query \
+  --lng 113.88 --lat 22.55 \
+  --topics air,radiation --hours 24 \
+  --pretty
+```
+
+离线自检：
+
+```bash
+python scripts/weather.py self-test --pretty
+```
+
+脚本支持 `current`、`hourly`、`daily`、`minutely`、`alerts`、`indices`、`air`、`radiation`、`astronomy`、`grid-hourly` 和 `grid-daily`。台风、潮汐、历史、监测站与账户接口仍由 Skill 按官方专业接口直接请求，避免脚本再次膨胀成大型 Plugin。
 
 ## 申请 API 密钥
 
@@ -122,12 +153,12 @@ OpenClaw 会从工作区 `skills/`、用户管理目录和其他配置目录加�
 
 ## 工作方式
 
-1. 优先使用用户提供的坐标，或复用同一会话中已经确认的地点坐标。
-2. 只有收到新的地址、街道、小区或 POI 时，才使用高德 `/v3/geocode/geo` 解析坐标。
-3. 根据问题选择需要的接口，不默认拉取所有大 JSON。
-4. 让 AI 工具并行请求和风与彩云的独立接口。
-5. 统一温度、湿度、降水量、降水概率和天气状况后再比较。
-6. 只提取回答需要的字段，普通回答保持简洁，详细问题才展开小时、污染物或专业数据。
+1. AI 优先调用 `scripts/weather.py`，并根据问题选择 topics。
+2. 脚本优先使用用户提供的坐标；只有收到新的详细地址时才调用高德。
+3. 脚本并行请求和风与彩云，统一温度、湿度、降水、概率和 Skycon。
+4. 脚本只向 AI 输出紧凑 JSON，避免巨大原始响应占用上下文。
+5. AI 根据结构化结果回答，并在单源失败时明确标记来源。
+6. Python 不可用或查询专业端点时，Skill 使用 curl 官方接口回退。
 
 详细地址只是帮助定位天气网格。回答应使用“该地址附近天气”，不能声称是某栋楼或某个房间的精确天气；和风格点天气属于约 3–5 公里空间分辨率的数值模式数据。
 

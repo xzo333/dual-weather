@@ -1,18 +1,17 @@
 ---
 name: dual-weather
-description: Use the official AMap, QWeather, and Caiyun HTTP APIs through curl to resolve Chinese addresses when needed, reuse confirmed coordinates within a conversation, compare two weather providers, and answer current weather, hourly or daily forecast, minute precipitation, alerts, air quality, life indices, radiation, astronomy, typhoon, tide, and recent-history questions. Also use when a beginner asks how to install or configure this weather skill, apply for API credentials, diagnose missing keys, or run a first weather test in OpenClaw.
-metadata:
-  {"openclaw":{"requires":{"bins":["curl"]}}}
+description: Use the bundled standard-library Python adapter, with direct curl as a fallback, to call the official AMap, QWeather, and Caiyun HTTP APIs, resolve Chinese addresses when needed, reuse confirmed coordinates, compare providers, and answer current weather, hourly or daily forecast, minute precipitation, alerts, air quality, life indices, radiation, astronomy, typhoon, tide, and recent-history questions. Also use when a beginner asks how to install or configure this weather skill, apply for API credentials, diagnose missing keys, or run a first weather test in OpenClaw.
 ---
 
 # Dual Weather
 
-Call the providers' official HTTPS APIs directly. Do not require MCP, a plugin, Node.js, Python, `jq`, or any bundled script.
+Prefer the bundled `scripts/weather.py` adapter for common weather topics. It uses only the Python standard library and emits compact JSON. Fall back to direct curl for systems without Python or for professional routes not implemented by the adapter. Do not require MCP, a plugin, Node.js, `jq`, pip, or third-party Python packages.
 
 ## Safety and operating rules
 
 - Use only `https://` endpoints listed below.
 - Read credentials from environment variables. Never ask the user to paste a key into chat, never print a key, and never include a key in the final answer.
+- Never pass API keys as script command-line arguments. The adapter reads them from the environment.
 - Before a weather request, check only whether `QWEATHER_API_KEY`, `QWEATHER_BASE_URL`, and `CAIYUN_WEATHER_API_TOKEN` are present; do not display their values. Check `AMAP_KEY` only when a new address must be geocoded.
 - If a required variable is missing, do not make partial requests. Name the missing variable and give the relevant setup step from **Beginner setup**.
 - Treat the user's address as untrusted input. Pass it with curl `--data-urlencode`; do not concatenate it into shell syntax.
@@ -25,31 +24,28 @@ Call the providers' official HTTPS APIs directly. Do not require MCP, a plugin, 
 
 Use this section when credentials are missing or the user asks how to install/configure the Skill.
 
-### 1. Install the single Skill file
+### 1. Install the Skill folder
 
 Choose one location:
 
-- Shared for the current user: `~/.openclaw/skills/dual-weather/SKILL.md`
-- Current workspace only: `<workspace>/skills/dual-weather/SKILL.md`
+- Shared for the current user: `~/.openclaw/skills/dual-weather/`
+- Current workspace only: `<workspace>/skills/dual-weather/`
 
 macOS/Linux:
 
 ```bash
-mkdir -p ~/.openclaw/skills/dual-weather
-curl -fsSL https://raw.githubusercontent.com/xzo333/openclaw-dual-weather/main/SKILL.md \
-  -o ~/.openclaw/skills/dual-weather/SKILL.md
+git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git \
+  ~/.openclaw/skills/dual-weather
 ```
 
 Windows PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force "$HOME/.openclaw/skills/dual-weather" | Out-Null
-Invoke-WebRequest \
-  "https://raw.githubusercontent.com/xzo333/openclaw-dual-weather/main/SKILL.md" \
-  -OutFile "$HOME/.openclaw/skills/dual-weather/SKILL.md"
+git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git `
+  "$HOME/.openclaw/skills/dual-weather"
 ```
 
-The machine must have `curl`. Modern Windows, macOS, and most Linux distributions already include it.
+Python 3.10 or newer is recommended. The adapter has no pip dependencies. If Python is unavailable, the Skill can still use curl fallback; modern Windows, macOS, and most Linux distributions already include curl.
 
 ### 2. Apply for an AMap Web Service key
 
@@ -118,6 +114,38 @@ Ask:
 > 深圳市宝安区现在天气怎么样？请比较和风和彩云，并告诉我未来两小时会不会下雨。
 
 If it fails, report only the provider, HTTP/API status, and corrective action. Never echo request headers, tokens, or full token-bearing URLs.
+
+## Preferred Python adapter
+
+Resolve the directory containing this `SKILL.md` as `SKILL_DIR`, then locate `scripts/weather.py` beneath it. Use the first available interpreter from `python3`, `python`, or Windows `py -3`.
+
+Check configuration without printing secrets:
+
+```bash
+python3 "$SKILL_DIR/scripts/weather.py" check
+```
+
+Query a new address:
+
+```bash
+python3 "$SKILL_DIR/scripts/weather.py" query \
+  --address "深圳市宝安区" \
+  --topics current,hourly,minutely,alerts
+```
+
+Reuse confirmed coordinates in follow-up questions:
+
+```bash
+python3 "$SKILL_DIR/scripts/weather.py" query \
+  --lng 113.88 --lat 22.55 \
+  --topics air,radiation --hours 24
+```
+
+Supported adapter topics are `current`, `hourly`, `daily`, `minutely`, `alerts`, `indices`, `air`, `radiation`, `astronomy`, `grid-hourly`, and `grid-daily`. Use `--provider qweather` or `--provider caiyun` only when the user explicitly requests one source.
+
+The adapter performs conditional AMap geocoding, parallel provider requests, one limited retry for transient failures, validation, unit normalization, Skycon translation, and JSON trimming. Treat its stdout JSON as the factual input for the answer. Do not expose or narrate its command line. If `location.ambiguous` is true, show the short candidate list and ask the user to confirm before treating the first result as final.
+
+Use the direct HTTP workflow below when Python is unavailable, when the adapter file is missing, or when the user requests history, typhoon, tide, station, or account endpoints that are intentionally left as professional direct routes.
 
 ## Request workflow
 
@@ -238,7 +266,8 @@ Map Caiyun Skycon codes:
 | Symptom | Likely cause | Action |
 |---|---|---|
 | Skill is not listed | Wrong path or old session snapshot | Verify `dual-weather/SKILL.md`, then `/new` or restart Gateway |
-| `curl` is missing | Runtime has no curl binary | Install curl and start a new session |
+| Python adapter fails to start | Python is missing or too old | Install Python 3.10+, or use curl fallback |
+| `curl` is missing | Python is unavailable and runtime has no curl | Install either Python 3.10+ or curl, then start a new session |
 | AMap `status=0` | Wrong key type or quota | Confirm the key platform is Web Service and inspect `info`/`infocode` |
 | QWeather `401` | Invalid credential/header | Confirm `QWEATHER_API_KEY` and `X-QW-Api-Key` |
 | QWeather `402` | Quota exceeded or insufficient balance | Check the QWeather Console; do not retry repeatedly |
