@@ -2,7 +2,7 @@
 
 一个轻量的 OpenClaw Skill。城市和区县优先使用和风 GeoAPI 定位，街道、小区、建筑等详细地址才使用高德；已有坐标或同一会话继续追问时直接复用。随后根据问题并行调用和风天气与彩云天气官方 API，查询该位置附近的天气详情并进行双源比较。
 
-本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、超时重试、字段归一化和紧凑 JSON 输出。不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。仓库中的 `tests/` 与 `.github/workflows/` 只用于开发验证，不进入轻量安装包。
+本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、gzip 响应解压、超时重试、字段归一化和紧凑 JSON 输出。不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。仓库中的 `tests/` 与 `.github/workflows/` 只用于开发验证，不进入轻量安装包。
 
 ## 能做什么
 
@@ -164,16 +164,17 @@ python scripts/weather.py self-test --pretty
 1. AI 优先调用 `scripts/weather.py`，并根据问题选择 topics。
 2. 脚本优先使用用户提供的坐标；城市/区县走和风 GeoAPI，新的详细地址才调用高德。
 3. 脚本并行请求和风与彩云。所有和风坐标固定为两位小数；彩云小时请求向上补齐到 24 的整数倍，再按用户要求裁剪。
-4. 脚本统一温度、湿度、概率和 Skycon；和风降水量用 `precipitationAmount`（mm），彩云 `metric:v2` 降水强度用 `precipitationIntensity`（mm/h），避免混淆。
-5. 和风预警使用 Weather Alert v1 的 `metadata + alerts[]` 结构，并保留必须随预警展示的 `metadata.attributions`。
-6. 彩云日级降雨概率因公开文档未明确比例，暂以 `precipitationProbabilityRaw` 原样输出，不擅自乘 100 或标记 `%`。
-7. 脚本只向 AI 输出紧凑 JSON，避免巨大原始响应占用上下文。
-8. AI 根据结构化结果回答，并在单源失败时明确标记来源。
-9. Python 不可用或查询专业端点时，Skill 使用 curl 官方接口回退。
+4. HTTP 层显式请求并解压 gzip，成功 JSON 与 HTTP 错误体使用相同的安全解压逻辑。
+5. 脚本统一温度、湿度、概率和 Skycon；和风降水量用 `precipitationAmount`（mm），彩云 `metric:v2` 降水强度用 `precipitationIntensity`（mm/h），避免混淆。
+6. 和风预警使用 Weather Alert v1 的 `metadata + alerts[]` 结构，并保留必须随预警展示的 `metadata.attributions`。
+7. 彩云日级降雨概率因公开文档未明确比例，暂以 `precipitationProbabilityRaw` 原样输出，不擅自乘 100 或标记 `%`。
+8. 脚本只向 AI 输出紧凑 JSON，避免巨大原始响应占用上下文。
+9. AI 根据结构化结果回答，并在单源失败时明确标记来源。
+10. Python 不可用或查询专业端点时，Skill 使用 curl 官方接口回退。
 
 ## 开发验证
 
-仓库提供脱敏 API fixture，覆盖新版和风预警、GeoAPI 多候选、彩云 `metric:v2` 以及小时/分钟/日级概率口径：
+仓库提供脱敏 API fixture，覆盖 gzip 成功响应、gzip HTTP 错误体、损坏压缩数据、新版和风预警、GeoAPI 多候选、彩云 `metric:v2` 以及小时/分钟/日级概率口径：
 
 ```bash
 python -m py_compile scripts/weather.py

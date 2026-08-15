@@ -1,4 +1,6 @@
+import gzip
 import importlib.util
+import io
 import json
 import re
 import unittest
@@ -18,6 +20,97 @@ def fixture(name):
 
 
 class WeatherFixtureTests(unittest.TestCase):
+    def test_gzip_success_response_is_decoded_before_json(self):
+        captured = {}
+        body = gzip.compress(b'{"status":"ok","value":42}')
+
+        class FakeResponse:
+            status = 200
+            headers = {
+                "Content-Encoding": "gzip",
+                "Content-Type": "application/json",
+            }
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                return body if size < 0 else body[:size]
+
+        original = weather.urllib.request.urlopen
+
+        def fake_urlopen(request, timeout):
+            captured["acceptEncoding"] = request.get_header("Accept-encoding")
+            return FakeResponse()
+
+        weather.urllib.request.urlopen = fake_urlopen
+        try:
+            result = weather.http_json(
+                "qweather", "https://example.invalid/weather", retries=0
+            )
+        finally:
+            weather.urllib.request.urlopen = original
+
+        self.assertEqual(result["value"], 42)
+        self.assertEqual(captured["acceptEncoding"], "gzip")
+
+    def test_gzip_http_error_body_keeps_api_message(self):
+        body = gzip.compress(b'{"message":"API key invalid"}')
+        original = weather.urllib.request.urlopen
+
+        def fake_urlopen(*args, **kwargs):
+            raise weather.urllib.error.HTTPError(
+                "https://example.invalid/weather",
+                401,
+                "Unauthorized",
+                {
+                    "Content-Encoding": "gzip",
+                    "Content-Type": "application/json",
+                },
+                io.BytesIO(body),
+            )
+
+        weather.urllib.request.urlopen = fake_urlopen
+        try:
+            with self.assertRaises(weather.WeatherError) as raised:
+                weather.http_json(
+                    "qweather", "https://example.invalid/weather", retries=0
+                )
+        finally:
+            weather.urllib.request.urlopen = original
+
+        self.assertEqual(raised.exception.status, 401)
+        self.assertIn("API key invalid", raised.exception.message)
+
+    def test_corrupt_gzip_has_explicit_error(self):
+        class FakeResponse:
+            status = 200
+            headers = {"Content-Encoding": "gzip"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                return b"not-a-gzip-stream"
+
+        original = weather.urllib.request.urlopen
+        weather.urllib.request.urlopen = lambda *args, **kwargs: FakeResponse()
+        try:
+            with self.assertRaises(weather.WeatherError) as raised:
+                weather.http_json(
+                    "qweather", "https://example.invalid/weather", retries=0
+                )
+        finally:
+            weather.urllib.request.urlopen = original
+
+        self.assertEqual(raised.exception.message, "gzip 响应解压失败")
+
     def test_qweather_alert_request_uses_current_v1_path(self):
         captured = {}
         original = weather.qweather_json

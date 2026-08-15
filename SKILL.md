@@ -5,7 +5,7 @@ description: Query and compare QWeather and Caiyun for Chinese locations, includ
 
 # Dual Weather
 
-Prefer the bundled `scripts/weather.py` adapter for common weather topics. It uses only the Python standard library and emits compact JSON. Fall back to direct curl for systems without Python or for professional routes not implemented by the adapter. Do not require MCP, a plugin, Node.js, `jq`, pip, or third-party Python packages.
+Prefer the bundled `scripts/weather.py` adapter for common weather topics. It uses only the Python standard library, transparently decodes gzip HTTP responses, and emits compact JSON. Fall back to direct curl for systems without Python or for professional routes not implemented by the adapter. Do not require MCP, a plugin, Node.js, `jq`, pip, or third-party Python packages.
 
 ## Safety and operating rules
 
@@ -148,7 +148,7 @@ python3 "{baseDir}/scripts/weather.py" query \
 
 Supported adapter topics are `current`, `hourly`, `daily`, `minutely`, `alerts`, `indices`, `air`, `radiation`, `astronomy`, `grid-hourly`, and `grid-daily`. Use `--provider qweather` or `--provider caiyun` only when the user explicitly requests one source.
 
-The adapter routes city/district names to QWeather GeoAPI and detailed addresses to AMap. Override auto-detection with `--location-type city` or `--location-type address` only when needed. It performs parallel provider requests, one limited retry for transient failures, validation, unit normalization, Skycon translation, and JSON trimming. Treat stdout JSON as the factual input. Do not expose or narrate its command line. If `location.ambiguous` is true, show the short candidate list and ask the user to confirm before treating the first result as final.
+The adapter routes city/district names to QWeather GeoAPI and detailed addresses to AMap. Override auto-detection with `--location-type city` or `--location-type address` only when needed. It performs parallel provider requests, gzip decoding for success and error bodies, one limited retry for transient failures, validation, unit normalization, Skycon translation, and JSON trimming. Treat stdout JSON as the factual input. Do not expose or narrate its command line. If `location.ambiguous` is true, show the short candidate list and ask the user to confirm before treating the first result as final.
 
 Use the direct HTTP workflow below when Python is unavailable, when the adapter file is missing, or when the user requests history, typhoon, tide, station, or account endpoints that are intentionally left as professional direct routes.
 
@@ -289,5 +289,6 @@ Map Caiyun Skycon codes:
 | QWeather `403` | Product not enabled | Check project permissions and plan |
 | QWeather `404` | Wrong assigned host or path | Recopy `QWEATHER_BASE_URL`; do not append `/v7` in config |
 | QWeather `429` | QPM limit | Wait, reduce calls, then retry once |
+| Adapter reports invalid JSON while `curl --compressed` works | Adapter older than v0.13.0 and cannot decode gzip | Update the Skill; current adapter decodes gzip success and error bodies |
 | Caiyun authentication error | Wrong/disabled token | Recopy the application token and check plan status |
 | One provider times out | Temporary network/provider issue | Answer from the other provider and label it single-source |

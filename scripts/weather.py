@@ -11,8 +11,10 @@ import argparse
 import base64
 import concurrent.futures
 import datetime as dt
+import gzip
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -26,8 +28,9 @@ import uuid
 from typing import Any, Callable
 
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 RETRYABLE_HTTP = {429, 502, 503, 504}
+MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_TOPICS = ("current", "hourly", "minutely", "alerts")
 SUPPORTED_TOPICS = {
     "current",
@@ -126,6 +129,55 @@ def compact_error_body(data: bytes) -> str | None:
     return None
 
 
+def decode_http_body(
+    data: bytes,
+    headers: Any,
+    provider: str,
+    status: int | str | None,
+) -> bytes:
+    content_encoding = ""
+    get_header = getattr(headers, "get", None)
+    if callable(get_header):
+        content_encoding = str(get_header("Content-Encoding", "") or "")
+    encodings = [
+        encoding.strip().lower()
+        for encoding in content_encoding.split(",")
+        if encoding.strip()
+    ]
+    if not encodings and data.startswith(b"\x1f\x8b"):
+        encodings = ["gzip"]
+
+    decoded = data
+    for encoding in reversed(encodings):
+        if encoding in ("identity", ""):
+            continue
+        if encoding not in ("gzip", "x-gzip"):
+            raise WeatherError(
+                provider,
+                f"响应使用不支持的 Content-Encoding: {encoding}",
+                status,
+            )
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(decoded), mode="rb") as stream:
+                decoded = stream.read(MAX_HTTP_BODY_BYTES + 1)
+        except (EOFError, OSError, gzip.BadGzipFile) as exc:
+            raise WeatherError(provider, "gzip 响应解压失败", status) from exc
+        if len(decoded) > MAX_HTTP_BODY_BYTES:
+            raise WeatherError(provider, "解压后的响应过大", status)
+    return decoded
+
+
+def read_http_body(
+    response: Any,
+    provider: str,
+    status: int | str | None,
+) -> bytes:
+    raw = response.read(MAX_HTTP_BODY_BYTES + 1)
+    if len(raw) > MAX_HTTP_BODY_BYTES:
+        raise WeatherError(provider, "HTTP 响应过大", status)
+    return decode_http_body(raw, getattr(response, "headers", {}), provider, status)
+
+
 def http_json(
     provider: str,
     url: str,
@@ -136,6 +188,7 @@ def http_json(
 ) -> dict[str, Any]:
     request_headers = {
         "Accept": "application/json",
+        "Accept-Encoding": "gzip",
         "User-Agent": f"openclaw-dual-weather/{VERSION}",
         **(headers or {}),
     }
@@ -146,7 +199,7 @@ def http_json(
                 status = getattr(response, "status", 200)
                 if status == 204:
                     raise WeatherError(provider, "当前位置暂无可用数据", 204)
-                raw = response.read()
+                raw = read_http_body(response, provider, status)
                 try:
                     payload = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -155,7 +208,14 @@ def http_json(
                     raise WeatherError(provider, "响应 JSON 顶层不是对象", status)
                 return payload
         except urllib.error.HTTPError as exc:
-            detail = compact_error_body(exc.read())
+            try:
+                error_body = read_http_body(exc, provider, exc.code)
+            except WeatherError:
+                if exc.code in RETRYABLE_HTTP and attempt < retries:
+                    time.sleep(0.25 * (2**attempt))
+                    continue
+                raise
+            detail = compact_error_body(error_body)
             if exc.code in RETRYABLE_HTTP and attempt < retries:
                 time.sleep(0.25 * (2**attempt))
                 continue
@@ -1424,6 +1484,17 @@ def command_self_test(args: argparse.Namespace) -> int:
     expect(percent(1, True) == 100, "minutely fractional probability")
     expect(pressure_hpa(100_250) == 1002.5, "pressure conversion")
     expect(number("33.24", 1) == 33.2, "number rounding")
+    compressed_json = gzip.compress(b'{"status":"ok"}')
+    expect(
+        decode_http_body(
+            compressed_json,
+            {"Content-Encoding": "gzip"},
+            "test",
+            200,
+        )
+        == b'{"status":"ok"}',
+        "gzip response decoding",
+    )
     expect(qweather_hour_bucket(25) == 72, "hour bucket")
     expect(qweather_day_bucket(8) == 10, "day bucket")
     expect(parse_topics("current,hourly,current") == ("current", "hourly"), "topics")
