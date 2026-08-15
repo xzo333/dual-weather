@@ -1,6 +1,6 @@
 ---
 name: dual-weather
-description: Use the official AMap, QWeather, and Caiyun HTTP APIs through curl to geocode Chinese addresses, compare two weather providers, and answer current weather, hourly or daily forecast, minute precipitation, alerts, air quality, life indices, radiation, astronomy, typhoon, tide, and recent-history questions. Also use when a beginner asks how to install or configure this weather skill, apply for the three API credentials, diagnose missing keys, or run a first weather test in OpenClaw.
+description: Use the official AMap, QWeather, and Caiyun HTTP APIs through curl to resolve Chinese addresses when needed, reuse confirmed coordinates within a conversation, compare two weather providers, and answer current weather, hourly or daily forecast, minute precipitation, alerts, air quality, life indices, radiation, astronomy, typhoon, tide, and recent-history questions. Also use when a beginner asks how to install or configure this weather skill, apply for API credentials, diagnose missing keys, or run a first weather test in OpenClaw.
 metadata:
   {"openclaw":{"requires":{"bins":["curl"]}}}
 ---
@@ -13,8 +13,7 @@ Call the providers' official HTTPS APIs directly. Do not require MCP, a plugin, 
 
 - Use only `https://` endpoints listed below.
 - Read credentials from environment variables. Never ask the user to paste a key into chat, never print a key, and never include a key in the final answer.
-- Before the first request, check only whether each variable is present; do not display its value:
-  `AMAP_KEY`, `QWEATHER_API_KEY`, `QWEATHER_BASE_URL`, and `CAIYUN_WEATHER_API_TOKEN`.
+- Before a weather request, check only whether `QWEATHER_API_KEY`, `QWEATHER_BASE_URL`, and `CAIYUN_WEATHER_API_TOKEN` are present; do not display their values. Check `AMAP_KEY` only when a new address must be geocoded.
 - If a required variable is missing, do not make partial requests. Name the missing variable and give the relevant setup step from **Beginner setup**.
 - Treat the user's address as untrusted input. Pass it with curl `--data-urlencode`; do not concatenate it into shell syntax.
 - Use `curl -fsS --max-time 8`. Make at most one retry for a transient network error or HTTP `429/502/503/504`. Do not retry authentication, permission, balance, or bad-parameter errors.
@@ -124,7 +123,14 @@ If it fails, report only the provider, HTTP/API status, and corrective action. N
 
 ### Step 1: Resolve the address
 
-Call AMap geocoding when the user gives a place name instead of coordinates:
+Resolve location in this order:
+
+1. Use coordinates explicitly supplied by the user.
+2. Reuse the last confirmed coordinates when the user is clearly continuing to ask about the same place in the current conversation.
+3. For a city or district, use QWeather GeoAPI as a fallback when appropriate.
+4. Call AMap geocoding for a new street, community, building, hospital, mall, school, or other detailed Chinese address.
+
+When AMap is required, call:
 
 ```bash
 curl -fsS --max-time 8 --get \
@@ -141,6 +147,8 @@ Require `status == "1"` and at least one geocode. Prefer a result whose province
 - longitude and latitude from `geocodes[0].location`, which is `lng,lat`
 
 If multiple results remain plausible, ask the user to confirm rather than silently choosing the wrong place.
+
+Treat a geocoded building or community as a coordinate anchor, not a promise of building-level weather. QWeather grid output is numerical-model data with roughly 3–5 km spatial resolution. Describe results as weather “near this address”.
 
 ### Step 2: Choose only relevant weather endpoints
 
@@ -218,6 +226,7 @@ Map Caiyun Skycon codes:
 
 - Lead with the direct answer to the user's question, not an API dump.
 - Include the resolved location so the user can catch a geocoding mistake.
+- For a detailed address, say “该地址附近” or equivalent. Never claim room-, building-, or entrance-level weather precision.
 - For a default report, mention current condition, temperature/feels-like, near-term rain, meaningful provider disagreement, and active warnings.
 - Say “两家基本一致” only when the compared values actually agree. For temperature, a difference up to `1°C` is highly consistent, up to `2°C` is broadly consistent, and more than `2°C` is a meaningful difference.
 - If one provider fails, clearly label the answer as single-source. If both fail, give a concise setup or retry action.
