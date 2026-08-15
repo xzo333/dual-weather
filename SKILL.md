@@ -1,6 +1,6 @@
 ---
 name: dual-weather
-description: Use the bundled standard-library Python adapter, with direct curl as a fallback, to call the official AMap, QWeather, and Caiyun HTTP APIs, resolve Chinese addresses when needed, reuse confirmed coordinates, compare providers, and answer current weather, hourly or daily forecast, minute precipitation, alerts, air quality, life indices, radiation, astronomy, typhoon, tide, and recent-history questions. Also use when a beginner asks how to install or configure this weather skill, apply for API credentials, diagnose missing keys, or run a first weather test in OpenClaw.
+description: Query and compare QWeather and Caiyun for Chinese locations, including rain, alerts, air, indices, radiation, astronomy, setup, and API troubleshooting.
 ---
 
 # Dual Weather
@@ -12,8 +12,8 @@ Prefer the bundled `scripts/weather.py` adapter for common weather topics. It us
 - Use only `https://` endpoints listed below.
 - Read credentials from environment variables. Never ask the user to paste a key into chat, never print a key, and never include a key in the final answer.
 - Never pass API keys as script command-line arguments. The adapter reads them from the environment.
-- Before a weather request, check only whether `QWEATHER_API_KEY`, `QWEATHER_BASE_URL`, and `CAIYUN_WEATHER_API_TOKEN` are present; do not display their values. Check `AMAP_KEY` only when a new address must be geocoded.
-- If a required variable is missing, do not make partial requests. Name the missing variable and give the relevant setup step from **Beginner setup**.
+- Before a weather request, check only whether QWeather and Caiyun credentials are present; do not display their values. Prefer `CAIYUN_APP_KEY` + `CAIYUN_APP_SECRET`; accept `CAIYUN_WEATHER_API_TOKEN` only as a compatibility fallback. Check `AMAP_KEY` only for a new detailed address.
+- Continue with one configured weather provider when the other is unavailable, and label the answer as single-source. Stop only when neither requested weather provider can run. A missing `AMAP_KEY` must not block city or district lookup through QWeather GeoAPI.
 - Treat the user's address as untrusted input. Pass it with curl `--data-urlencode`; do not concatenate it into shell syntax.
 - Use `curl -fsS --max-time 8`. Make at most one retry for a transient network error or HTTP `429/502/503/504`. Do not retry authentication, permission, balance, or bad-parameter errors.
 - After geocoding, issue independent QWeather and Caiyun requests as parallel tool calls when the tool runtime supports parallel calls. A failure from one provider must not cancel the other provider.
@@ -47,7 +47,7 @@ git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git `
 
 Python 3.10 or newer is recommended. The adapter has no pip dependencies. If Python is unavailable, the Skill can still use curl fallback; modern Windows, macOS, and most Linux distributions already include curl.
 
-### 2. Apply for an AMap Web Service key
+### 2. Apply for an AMap Web Service key when detailed addresses are needed
 
 1. Open the [AMap developer console](https://console.amap.com/) and sign in or register.
 2. Create an application.
@@ -55,7 +55,7 @@ Python 3.10 or newer is recommended. The adapter has no pip dependencies. If Pyt
 4. Follow the [official key guide](https://lbs.amap.com/api/webservice/guide/create-project/get-key).
 5. Save the value locally as `AMAP_KEY`.
 
-This key is used only to convert an address such as `深圳市宝安区` into longitude and latitude.
+This key is optional for city and district queries. It is used for streets, communities, buildings, hospitals, schools, malls, and other detailed addresses. City and district names such as `深圳` or `深圳市宝安区` can use QWeather GeoAPI instead.
 
 ### 3. Apply for a QWeather API key and API Host
 
@@ -68,14 +68,15 @@ This key is used only to convert an address such as `深圳市宝安区` into lo
 
 Professional products such as solar radiation, station data, history, typhoon, and tide may require an eligible plan or additional permission. Do not promise that every account has access.
 
-### 4. Apply for a Caiyun Weather token
+### 4. Apply for Caiyun App Key and App Secret
 
 1. Open the [Caiyun Weather API platform](https://platform.caiyunapp.com/) and sign in or register.
 2. Create an application and enable Weather API access according to the available plan.
-3. Copy its token into `CAIYUN_WEATHER_API_TOKEN`.
-4. Read the [official Caiyun Weather API documentation](https://docs.caiyunapp.com/weather-api/dev.html).
+3. Copy the App Key into `CAIYUN_APP_KEY` and App Secret into `CAIYUN_APP_SECRET`.
+4. Keep both values local and read the [official authentication guide](https://docs.caiyunapp.com/weather-api/v2/v2.6/auth.html).
+5. If an older application only exposes a Token, save it as `CAIYUN_WEATHER_API_TOKEN`; the adapter supports this legacy URL-token mode as a fallback.
 
-The token is embedded in Caiyun's official request path. Never show the expanded request URL to the user.
+The adapter prefers HMAC-SHA256 authentication and creates a fresh nonce, timestamp, and signature for every request and retry. Never show App Secret, signatures, or expanded legacy token URLs.
 
 ### 5. Configure OpenClaw
 
@@ -91,7 +92,8 @@ Prefer OS environment variables or a secret manager. Then reference them from `~
           AMAP_KEY: "${AMAP_KEY}",
           QWEATHER_API_KEY: "${QWEATHER_API_KEY}",
           QWEATHER_BASE_URL: "${QWEATHER_BASE_URL}",
-          CAIYUN_WEATHER_API_TOKEN: "${CAIYUN_WEATHER_API_TOKEN}"
+          CAIYUN_APP_KEY: "${CAIYUN_APP_KEY}",
+          CAIYUN_APP_SECRET: "${CAIYUN_APP_SECRET}"
         }
       }
     }
@@ -117,18 +119,18 @@ If it fails, report only the provider, HTTP/API status, and corrective action. N
 
 ## Preferred Python adapter
 
-Resolve the directory containing this `SKILL.md` as `SKILL_DIR`, then locate `scripts/weather.py` beneath it. Use the first available interpreter from `python3`, `python`, or Windows `py -3`.
+Use OpenClaw's `{baseDir}` placeholder to reference the bundled script reliably. Use the first available interpreter from `python3`, `python`, or Windows `py -3`.
 
 Check configuration without printing secrets:
 
 ```bash
-python3 "$SKILL_DIR/scripts/weather.py" check
+python3 "{baseDir}/scripts/weather.py" check
 ```
 
 Query a new address:
 
 ```bash
-python3 "$SKILL_DIR/scripts/weather.py" query \
+python3 "{baseDir}/scripts/weather.py" query \
   --address "深圳市宝安区" \
   --topics current,hourly,minutely,alerts
 ```
@@ -136,14 +138,14 @@ python3 "$SKILL_DIR/scripts/weather.py" query \
 Reuse confirmed coordinates in follow-up questions:
 
 ```bash
-python3 "$SKILL_DIR/scripts/weather.py" query \
+python3 "{baseDir}/scripts/weather.py" query \
   --lng 113.88 --lat 22.55 \
   --topics air,radiation --hours 24
 ```
 
 Supported adapter topics are `current`, `hourly`, `daily`, `minutely`, `alerts`, `indices`, `air`, `radiation`, `astronomy`, `grid-hourly`, and `grid-daily`. Use `--provider qweather` or `--provider caiyun` only when the user explicitly requests one source.
 
-The adapter performs conditional AMap geocoding, parallel provider requests, one limited retry for transient failures, validation, unit normalization, Skycon translation, and JSON trimming. Treat its stdout JSON as the factual input for the answer. Do not expose or narrate its command line. If `location.ambiguous` is true, show the short candidate list and ask the user to confirm before treating the first result as final.
+The adapter routes city/district names to QWeather GeoAPI and detailed addresses to AMap. Override auto-detection with `--location-type city` or `--location-type address` only when needed. It performs parallel provider requests, one limited retry for transient failures, validation, unit normalization, Skycon translation, and JSON trimming. Treat stdout JSON as the factual input. Do not expose or narrate its command line. If `location.ambiguous` is true, show the short candidate list and ask the user to confirm before treating the first result as final.
 
 Use the direct HTTP workflow below when Python is unavailable, when the adapter file is missing, or when the user requests history, typhoon, tide, station, or account endpoints that are intentionally left as professional direct routes.
 
@@ -155,7 +157,7 @@ Resolve location in this order:
 
 1. Use coordinates explicitly supplied by the user.
 2. Reuse the last confirmed coordinates when the user is clearly continuing to ask about the same place in the current conversation.
-3. For a city or district, use QWeather GeoAPI as a fallback when appropriate.
+3. For a city or district, use QWeather GeoAPI first and fall back to AMap only when configured and necessary.
 4. Call AMap geocoding for a new street, community, building, hospital, mall, school, or other detailed Chinese address.
 
 When AMap is required, call:
@@ -200,7 +202,7 @@ Use `QWEATHER_BASE_URL` as the host and send `X-QW-Api-Key: $QWEATHER_API_KEY` o
 | Tide | `/v7/ocean/tide`, using a QWeather TSTA station ID | no equivalent required |
 | Usage or finance | `/metrics/v1/stats` or `/finance/v1/summary` | no equivalent required; call only on explicit account questions |
 
-Use the QWeather GeoAPI paths derived from the assigned host (`/geo/v2/city/lookup`, `/geo/v2/poi/lookup`, `/geo/v2/poi/range`) only when a LocationID, scenic POI, or tide station ID is required.
+Use `/geo/v2/city/lookup` from the assigned QWeather host for ordinary city and district resolution. Use `/geo/v2/poi/lookup` or `/geo/v2/poi/range` only when a scenic POI or station-oriented lookup is required.
 
 Do not call professional, finance, or account endpoints merely to enrich an ordinary weather answer.
 
@@ -215,14 +217,19 @@ curl -fsS --max-time 8 --get \
   --data-urlencode "location=$LNG,$LAT"
 ```
 
-Caiyun template:
+Format every QWeather longitude and latitude to exactly two decimal places before sending it, including query parameters and coordinate path segments.
+
+Caiyun HMAC template:
 
 ```bash
 curl -fsS --max-time 8 \
-  "https://api.caiyunapp.com/v2.6/$CAIYUN_WEATHER_API_TOKEN/$LNG,$LAT/weather.json?alert=true&dailysteps=1&hourlysteps=12"
+  "https://api.caiyunapp.com/v2.6/$CAIYUN_APP_KEY/$LNG,$LAT/weather?alert=true&dailysteps=1&hourlysteps=24&unit=metric%3Av2" \
+  -H "x-cy-nonce: $NONCE" \
+  -H "x-cy-timestamp: $TIMESTAMP" \
+  -H "x-cy-signature: $SIGNATURE"
 ```
 
-Do not display either expanded command. For a default comparison, query QWeather current/hourly/warning and one Caiyun `weather.json` call concurrently. For a focused question, omit unrelated calls.
+Generate the signature exactly as documented; prefer the bundled adapter instead of reproducing signing logic in a shell. Round Caiyun `hourlysteps` up to the next multiple of 24, with a minimum of 24 and maximum of 360, then crop output to the user's requested hours. Always send `unit=metric:v2`. Do not display either expanded command. For a default comparison, query QWeather current/hourly/warning and one Caiyun weather call concurrently. For a focused question, omit unrelated calls.
 
 ### Step 4: Validate and normalize
 
@@ -232,8 +239,9 @@ Normalize before comparing:
 
 - Temperature: numeric Celsius; format as `N°C` only in the final answer.
 - QWeather humidity is already percent. Caiyun humidity is usually a fraction; multiply values from `0` through `1` by `100`.
-- Precipitation: millimetres, rounded to two decimals.
-- Probability: percent from `0` through `100`; multiply Caiyun fractions by `100`.
+- QWeather precipitation amount: `precipitationAmount` in millimetres, rounded to two decimals.
+- Caiyun precipitation intensity under `unit=metric:v2`: `precipitationIntensity` in millimetres per hour. Do not label it as accumulated millimetres.
+- Probability: QWeather and Caiyun hourly probability are already `0` through `100`. Caiyun minutely probability is `0` through `1` and must be multiplied by `100`.
 - Wind: combine QWeather `windDir` and `windScale`; do not invent a Beaufort conversion.
 - Time: preserve provider timestamps and state the timezone if providers differ.
 - Air quality: identify the standard/provider; do not compare unlike AQI standards as if identical.

@@ -8,8 +8,11 @@ variables and are never included in output.
 from __future__ import annotations
 
 import argparse
+import base64
 import concurrent.futures
 import datetime as dt
+import hashlib
+import hmac
 import json
 import math
 import os
@@ -19,10 +22,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Any, Callable
 
 
-VERSION = "0.1.0"
+VERSION = "0.11.0"
 RETRYABLE_HTTP = {429, 502, 503, 504}
 DEFAULT_TOPICS = ("current", "hourly", "minutely", "alerts")
 SUPPORTED_TOPICS = {
@@ -238,6 +242,68 @@ def qweather_json(
     return payload
 
 
+def caiyun_auth_state_for(
+    app_key: str | None,
+    app_secret: str | None,
+    token: str | None,
+) -> tuple[str | None, str | None]:
+    if app_key and app_secret:
+        return "hmac", None
+    if token:
+        warning = None
+        if bool(app_key) != bool(app_secret):
+            warning = "CAIYUN_APP_KEY 与 CAIYUN_APP_SECRET 必须成对配置；当前回退到旧 Token"
+        return "token", warning
+    if app_key or app_secret:
+        return None, "CAIYUN_APP_KEY 与 CAIYUN_APP_SECRET 必须成对配置"
+    return None, None
+
+
+def caiyun_auth_state() -> tuple[str | None, str | None]:
+    return caiyun_auth_state_for(
+        env("CAIYUN_APP_KEY"),
+        env("CAIYUN_APP_SECRET"),
+        env("CAIYUN_WEATHER_API_TOKEN"),
+    )
+
+
+def canonical_query(params: dict[str, Any]) -> str:
+    return "&".join(
+        f"{urllib.parse.quote_plus(str(key), safe='')}="
+        f"{urllib.parse.quote_plus(str(params[key]), safe='')}"
+        for key in sorted(params)
+        if params[key] is not None
+    )
+
+
+def caiyun_signature(
+    app_key: str,
+    app_secret: str,
+    method: str,
+    path: str,
+    nonce: str,
+    timestamp: str,
+    params: dict[str, Any],
+) -> str:
+    string_to_sign = ":".join(
+        (method, path, canonical_query(params), app_key, nonce, timestamp)
+    )
+    digest = hmac.new(
+        app_secret.encode("utf-8"),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii")
+
+
+def caiyun_hourly_steps(hours: int) -> int:
+    return max(24, min(360, math.ceil(hours / 24) * 24))
+
+
+def retryable_weather_error(exc: WeatherError) -> bool:
+    return exc.status in RETRYABLE_HTTP or exc.status == "network"
+
+
 def caiyun_json(
     lng: float,
     lat: float,
@@ -246,28 +312,72 @@ def caiyun_json(
     days: int,
     timeout: float,
 ) -> dict[str, Any]:
-    token = env("CAIYUN_WEATHER_API_TOKEN")
-    if not token:
-        raise WeatherError("caiyun", "缺少 CAIYUN_WEATHER_API_TOKEN", "config")
-    safe_token = urllib.parse.quote(token, safe="")
+    auth_mode, auth_warning = caiyun_auth_state()
+    if not auth_mode:
+        message = auth_warning or (
+            "缺少 CAIYUN_APP_KEY + CAIYUN_APP_SECRET，或兼容用 CAIYUN_WEATHER_API_TOKEN"
+        )
+        raise WeatherError("caiyun", message, "config")
     location = f"{format_coord(lng)},{format_coord(lat)}"
-    url = query_url(
-        f"https://api.caiyunapp.com/v2.6/{safe_token}/{location}",
-        "weather.json",
-        {
-            "alert": "true",
-            "hourlysteps": min(hours, 360),
-            "dailysteps": min(days, 15),
-        },
-    )
-    payload = http_json("caiyun", url, timeout=timeout)
+    params = {
+        "alert": "true",
+        "dailysteps": min(days, 15),
+        "hourlysteps": caiyun_hourly_steps(hours),
+        "unit": "metric:v2",
+    }
+
+    if auth_mode == "hmac":
+        app_key = env("CAIYUN_APP_KEY") or ""
+        app_secret = env("CAIYUN_APP_SECRET") or ""
+        safe_app_key = urllib.parse.quote(app_key, safe="")
+        path = f"/v2.6/{safe_app_key}/{location}/weather"
+        url = f"https://api.caiyunapp.com{path}?{canonical_query(params)}"
+        payload = None
+        for attempt in range(2):
+            nonce = str(uuid.uuid4())
+            timestamp = str(int(time.time()))
+            headers = {
+                "x-cy-nonce": nonce,
+                "x-cy-timestamp": timestamp,
+                "x-cy-signature": caiyun_signature(
+                    app_key,
+                    app_secret,
+                    "GET",
+                    path,
+                    nonce,
+                    timestamp,
+                    params,
+                ),
+            }
+            try:
+                payload = http_json(
+                    "caiyun", url, headers=headers, timeout=timeout, retries=0
+                )
+                break
+            except WeatherError as exc:
+                if attempt == 0 and retryable_weather_error(exc):
+                    time.sleep(0.25)
+                    continue
+                raise
+        if payload is None:  # defensive boundary
+            raise WeatherError("caiyun", "请求失败", "unknown")
+    else:
+        token = env("CAIYUN_WEATHER_API_TOKEN") or ""
+        safe_token = urllib.parse.quote(token, safe="")
+        url = query_url(
+            f"https://api.caiyunapp.com/v2.6/{safe_token}/{location}",
+            "weather.json",
+            params,
+        )
+        payload = http_json("caiyun", url, timeout=timeout)
+
     if payload.get("status") != "ok" or not isinstance(payload.get("result"), dict):
         message = payload.get("error") if isinstance(payload.get("error"), str) else "接口返回失败"
         raise WeatherError("caiyun", message, payload.get("status"))
     return payload
 
 
-def geocode(address: str, timeout: float) -> dict[str, Any]:
+def amap_geocode(address: str, timeout: float) -> dict[str, Any]:
     key = env("AMAP_KEY")
     if not key:
         raise WeatherError("amap", "解析新地址需要 AMAP_KEY", "config")
@@ -317,6 +427,127 @@ def geocode(address: str, timeout: float) -> dict[str, Any]:
             for candidate in candidates[:3]
         ]
     return result
+
+
+def qweather_geocode(address: str, timeout: float) -> dict[str, Any]:
+    payload = qweather_json(
+        "/geo/v2/city/lookup",
+        {"location": address, "number": 5, "lang": "zh"},
+        timeout=timeout,
+    )
+    candidates = [
+        item for item in array(payload.get("location"))[:5] if isinstance(item, dict)
+    ]
+    if not candidates:
+        raise WeatherError("qweather-geo", "未找到匹配的城市或区县", "not_found")
+    item = candidates[0]
+    lng = finite_number(item.get("lon"))
+    lat = finite_number(item.get("lat"))
+    if lng is None or lat is None:
+        raise WeatherError("qweather-geo", "城市结果缺少有效坐标", "invalid_response")
+    validate_coordinates(lng, lat)
+
+    def formatted(candidate: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for value in (
+            text(candidate.get("country")),
+            text(candidate.get("adm1")),
+            text(candidate.get("adm2")),
+            text(candidate.get("name")),
+        ):
+            if value and value not in parts:
+                parts.append(value)
+        return " ".join(parts) or address
+
+    result: dict[str, Any] = {
+        "source": "qweather-geo",
+        "query": address,
+        "formattedAddress": formatted(item),
+        "name": text(item.get("name")),
+        "locationId": text(item.get("id")),
+        "province": text(item.get("adm1")),
+        "city": text(item.get("adm2")),
+        "country": text(item.get("country")),
+        "timezone": text(item.get("tz")),
+        "lng": round(lng, 6),
+        "lat": round(lat, 6),
+    }
+    if len(candidates) > 1:
+        result["ambiguous"] = True
+        result["candidateCount"] = len(candidates)
+        result["candidates"] = [
+            clean_dict(
+                {
+                    "formattedAddress": formatted(candidate),
+                    "name": text(candidate.get("name")),
+                    "locationId": text(candidate.get("id")),
+                    "province": text(candidate.get("adm1")),
+                    "city": text(candidate.get("adm2")),
+                    "lng": number(candidate.get("lon"), 6),
+                    "lat": number(candidate.get("lat"), 6),
+                }
+            )
+            for candidate in candidates[:3]
+        ]
+    return result
+
+
+DETAILED_ADDRESS_MARKERS = (
+    "路",
+    "街",
+    "街道",
+    "大道",
+    "巷",
+    "弄",
+    "号",
+    "小区",
+    "社区",
+    "大厦",
+    "广场",
+    "中心",
+    "医院",
+    "学校",
+    "大学",
+    "机场",
+    "车站",
+    "园区",
+    "苑",
+    "楼",
+    "栋",
+    "室",
+    "商场",
+    "酒店",
+)
+
+
+def classify_location(address: str) -> str:
+    normalized = re.sub(r"\s+", "", address)
+    if any(marker in normalized for marker in DETAILED_ADDRESS_MARKERS):
+        return "address"
+    if re.search(r"\d", normalized):
+        return "address"
+    return "city"
+
+
+def resolve_location(address: str, location_type: str, timeout: float) -> dict[str, Any]:
+    selected_type = classify_location(address) if location_type == "auto" else location_type
+    if selected_type == "address":
+        return amap_geocode(address, timeout)
+
+    qweather_ready = bool(env("QWEATHER_API_KEY") and env("QWEATHER_BASE_URL"))
+    if qweather_ready:
+        try:
+            return qweather_geocode(address, timeout)
+        except WeatherError:
+            if not env("AMAP_KEY"):
+                raise
+    if env("AMAP_KEY"):
+        return amap_geocode(address, timeout)
+    raise WeatherError(
+        "location",
+        "城市/区县解析需要 QWEATHER_API_KEY + QWEATHER_BASE_URL；详细地址则需要 AMAP_KEY",
+        "config",
+    )
 
 
 def finite_number(value: Any) -> float | None:
@@ -386,6 +617,10 @@ def format_coord(value: float) -> str:
     return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
+def format_qweather_coord(value: float) -> str:
+    return f"{value:.2f}"
+
+
 def validate_coordinates(lng: float, lat: float) -> None:
     if not (-180 <= lng <= 180 and -90 <= lat <= 90):
         raise WeatherError("location", "经纬度超出有效范围", "input")
@@ -429,7 +664,9 @@ def qweather_tasks(
     date: str,
     timeout: float,
 ) -> dict[str, Callable[[], dict[str, Any]]]:
-    location = f"{format_coord(lng)},{format_coord(lat)}"
+    q_lng = format_qweather_coord(lng)
+    q_lat = format_qweather_coord(lat)
+    location = f"{q_lng},{q_lat}"
     tasks: dict[str, Callable[[], dict[str, Any]]] = {}
 
     def add(label: str, path: str, params: dict[str, Any]) -> None:
@@ -464,7 +701,7 @@ def qweather_tasks(
     if "air" in topics:
         add(
             "air",
-            f"/airquality/v1/current/{lat:.2f}/{lng:.2f}",
+            f"/airquality/v1/current/{q_lat}/{q_lng}",
             {},
         )
     if "grid-hourly" in topics:
@@ -482,7 +719,7 @@ def qweather_tasks(
     if "radiation" in topics:
         add(
             "radiation",
-            f"/solarradiation/v1/forecast/{lat:.2f}/{lng:.2f}",
+            f"/solarradiation/v1/forecast/{q_lat}/{q_lng}",
             {
                 "hours": min(hours, 60),
                 "interval": 60,
@@ -542,7 +779,7 @@ def normalize_qweather(
                 "feelsLike": number(now.get("feelsLike")),
                 "weather": text(now.get("text")),
                 "humidity": percent(now.get("humidity")),
-                "precipitation": number(now.get("precip"), 2),
+                "precipitationAmount": number(now.get("precip"), 2),
                 "wind": " ".join(
                     part for part in (text(now.get("windDir")), text(now.get("windScale"))) if part
                 )
@@ -559,7 +796,7 @@ def normalize_qweather(
                     "temperature": number(item.get("temp")),
                     "weather": text(item.get("text")),
                     "precipitationProbability": percent(item.get("pop")),
-                    "precipitation": number(item.get("precip"), 2),
+                    "precipitationAmount": number(item.get("precip"), 2),
                     "humidity": percent(item.get("humidity")),
                     "windDirection": text(item.get("windDir")),
                     "windScale": text(item.get("windScale")),
@@ -577,7 +814,7 @@ def normalize_qweather(
                     "temperatureMax": number(item.get("tempMax")),
                     "weatherDay": text(item.get("textDay")),
                     "weatherNight": text(item.get("textNight")),
-                    "precipitation": number(item.get("precip"), 2),
+                    "precipitationAmount": number(item.get("precip"), 2),
                     "humidity": percent(item.get("humidity")),
                     "uvIndex": number(item.get("uvIndex")),
                     "sunrise": text(item.get("sunrise")),
@@ -595,7 +832,7 @@ def normalize_qweather(
                 clean_dict(
                     {
                         "time": text(item.get("fxTime")),
-                        "precipitation": number(item.get("precip"), 2),
+                        "precipitationAmount": number(item.get("precip"), 2),
                         "type": text(item.get("type")),
                     }
                 )
@@ -643,7 +880,7 @@ def normalize_qweather(
                     "temperature": number(item.get("temp")),
                     "weather": text(item.get("text")),
                     "humidity": percent(item.get("humidity")),
-                    "precipitation": number(item.get("precip"), 2),
+                    "precipitationAmount": number(item.get("precip"), 2),
                     "windDirection": text(item.get("windDir")),
                     "windScale": text(item.get("windScale")),
                 }
@@ -660,7 +897,7 @@ def normalize_qweather(
                     "temperatureMax": number(item.get("tempMax")),
                     "weatherDay": text(item.get("textDay")),
                     "weatherNight": text(item.get("textNight")),
-                    "precipitation": number(item.get("precip"), 2),
+                    "precipitationAmount": number(item.get("precip"), 2),
                     "humidity": percent(item.get("humidity")),
                 }
             )
@@ -780,7 +1017,7 @@ def normalize_caiyun(
                 ),
                 "weather": skycon(realtime.get("skycon")),
                 "humidity": percent(realtime.get("humidity"), True),
-                "precipitation": number(
+                "precipitationIntensity": number(
                     ((realtime.get("precipitation") or {}).get("local") or {}).get("intensity"),
                     2,
                 ),
@@ -807,9 +1044,9 @@ def normalize_caiyun(
                     "weather": skycon(at(hourly.get("skycon"), index).get("value")),
                     "humidity": percent(at(hourly.get("humidity"), index).get("value"), True),
                     "precipitationProbability": percent(
-                        at(hourly.get("precipitation"), index).get("probability"), True
+                        at(hourly.get("precipitation"), index).get("probability"), False
                     ),
-                    "precipitation": number(
+                    "precipitationIntensity": number(
                         at(hourly.get("precipitation"), index).get("value"), 2
                     ),
                     "windSpeed": number(at(hourly.get("wind"), index).get("speed"), 2),
@@ -839,6 +1076,9 @@ def normalize_caiyun(
                     "precipitationProbability": percent(
                         at(daily.get("precipitation"), index).get("probability"), True
                     ),
+                    "precipitationIntensityAverage": number(
+                        at(daily.get("precipitation"), index).get("avg"), 2
+                    ),
                     "humidityAverage": percent(
                         at(daily.get("humidity"), index).get("avg"), True
                     ),
@@ -853,12 +1093,20 @@ def normalize_caiyun(
     if "minutely" in topics:
         minutely = result.get("minutely") if isinstance(result.get("minutely"), dict) else {}
         precipitation = array((minutely.get("precipitation_2h") or []))
+        probability = array(minutely.get("probability"))
         output["minutely"] = {
             "summary": text(minutely.get("description")),
             "points": [
                 {"minutesFromNow": index, "precipitationIntensity": number(value, 3)}
                 for index, value in enumerate(precipitation[:120])
                 if index % 5 == 0
+            ],
+            "probability": [
+                {
+                    "minutesFromNow": index * 30,
+                    "probability": percent(value, True),
+                }
+                for index, value in enumerate(probability[:4])
             ],
         }
     if "alerts" in topics:
@@ -940,6 +1188,8 @@ def command_check(args: argparse.Namespace) -> int:
             "AMAP_KEY",
             "QWEATHER_API_KEY",
             "QWEATHER_BASE_URL",
+            "CAIYUN_APP_KEY",
+            "CAIYUN_APP_SECRET",
             "CAIYUN_WEATHER_API_TOKEN",
         )
     }
@@ -951,15 +1201,21 @@ def command_check(args: argparse.Namespace) -> int:
             qweather_host_valid = True
         except WeatherError as exc:
             host_error = exc.message
+    caiyun_auth_mode, caiyun_config_error = caiyun_auth_state()
+    qweather_ready = variables["QWEATHER_API_KEY"] and qweather_host_valid
     json_output(
         {
             "ok": True,
             "version": VERSION,
             "python": sys.version.split()[0],
             "credentials": variables,
-            "geocodingReady": variables["AMAP_KEY"],
-            "qweatherReady": variables["QWEATHER_API_KEY"] and qweather_host_valid,
-            "caiyunReady": variables["CAIYUN_WEATHER_API_TOKEN"],
+            "geocodingReady": variables["AMAP_KEY"] or qweather_ready,
+            "cityGeocodingReady": qweather_ready or variables["AMAP_KEY"],
+            "detailedAddressGeocodingReady": variables["AMAP_KEY"],
+            "qweatherReady": qweather_ready,
+            "caiyunReady": caiyun_auth_mode is not None,
+            "caiyunAuthMode": caiyun_auth_mode,
+            "caiyunConfigurationError": caiyun_config_error,
             "qweatherHostError": host_error,
         },
         args.pretty,
@@ -974,7 +1230,9 @@ def command_query(args: argparse.Namespace) -> int:
     date = args.date or dt.datetime.now().strftime("%Y%m%d")
 
     if args.address:
-        location = geocode(args.address.strip(), args.timeout)
+        location = resolve_location(
+            args.address.strip(), args.location_type, args.timeout
+        )
         lng = float(location["lng"])
         lat = float(location["lat"])
     elif args.lng is not None and args.lat is not None:
@@ -1016,7 +1274,12 @@ def command_query(args: argparse.Namespace) -> int:
             )
 
     if args.provider in ("both", "caiyun"):
-        if env("CAIYUN_WEATHER_API_TOKEN"):
+        caiyun_auth_mode, caiyun_config_error = caiyun_auth_state()
+        if caiyun_config_error:
+            configuration_errors.append(
+                WeatherError("caiyun", caiyun_config_error, "config").as_dict()
+            )
+        if caiyun_auth_mode:
             tasks["caiyun:weather"] = (
                 "caiyun",
                 lambda: caiyun_json(
@@ -1028,13 +1291,14 @@ def command_query(args: argparse.Namespace) -> int:
                 ),
             )
         else:
-            configuration_errors.append(
-                WeatherError(
-                    "caiyun",
-                    "缺少 CAIYUN_WEATHER_API_TOKEN",
-                    "config",
-                ).as_dict()
-            )
+            if not caiyun_config_error:
+                configuration_errors.append(
+                    WeatherError(
+                        "caiyun",
+                        "缺少 CAIYUN_APP_KEY + CAIYUN_APP_SECRET，或兼容用 CAIYUN_WEATHER_API_TOKEN",
+                        "config",
+                    ).as_dict()
+                )
 
     results, request_errors = run_tasks(tasks)
     qweather_raw = {
@@ -1060,7 +1324,8 @@ def command_query(args: argparse.Namespace) -> int:
         "units": {
             "temperature": "°C",
             "humidity": "%",
-            "precipitation": "mm",
+            "precipitationAmount": "mm",
+            "precipitationIntensity": "mm/h",
             "probability": "%",
             "radiation": "W/m²",
         },
@@ -1081,12 +1346,37 @@ def command_self_test(args: argparse.Namespace) -> int:
     expect(skycon("PARTLY_CLOUDY_DAY") == "多云", "skycon mapping")
     expect(percent(0.67, True) == 67, "fractional humidity")
     expect(percent("70", False) == 70, "integer humidity")
+    expect(percent(1, False) == 1, "hourly probability stays percent")
+    expect(percent(1, True) == 100, "minutely fractional probability")
     expect(pressure_hpa(100_250) == 1002.5, "pressure conversion")
     expect(number("33.24", 1) == 33.2, "number rounding")
     expect(qweather_hour_bucket(25) == 72, "hour bucket")
     expect(qweather_day_bucket(8) == 10, "day bucket")
     expect(parse_topics("current,hourly,current") == ("current", "hourly"), "topics")
     expect(format_coord(113.880000) == "113.88", "coordinate formatting")
+    expect(format_qweather_coord(113.883115) == "113.88", "qweather coordinate formatting")
+    expect(caiyun_hourly_steps(1) == 24, "caiyun minimum hourly steps")
+    expect(caiyun_hourly_steps(24) == 24, "caiyun exact hourly steps")
+    expect(caiyun_hourly_steps(25) == 48, "caiyun rounded hourly steps")
+    expect(classify_location("深圳市宝安区") == "city", "city classification")
+    expect(classify_location("深圳市宝安区新安街道1号") == "address", "address classification")
+    expect(caiyun_auth_state_for("key", "secret", None) == ("hmac", None), "hmac auth mode")
+    expect(caiyun_auth_state_for(None, None, "token") == ("token", None), "token auth mode")
+    partial_mode, partial_error = caiyun_auth_state_for("key", None, None)
+    expect(partial_mode is None and bool(partial_error), "partial hmac detection")
+    expect(
+        caiyun_signature(
+            "demo-key",
+            "demo-secret",
+            "GET",
+            "/v2.6/demo-key/113.88,22.55/weather",
+            "0195c68a-42e7-7243-bff2-ac97a78b837d",
+            "1742791910",
+            {"hourlysteps": 24, "alert": "true"},
+        )
+        == "ro8JKqhRfneHjvc7nclJDW-6OrU2_9P9q04fZ-MK8ZE=",
+        "caiyun hmac signature",
+    )
     try:
         validate_qweather_base("http://example.com")
     except WeatherError:
@@ -1126,15 +1416,25 @@ def command_self_test(args: argparse.Namespace) -> int:
                     "skycon": "PARTLY_CLOUDY_DAY",
                     "humidity": 0.67,
                     "air_quality": {"aqi": {"chn": 45}},
-                }
+                },
+                "hourly": {
+                    "temperature": [{"datetime": "2026-08-15T12:00+08:00", "value": 33}],
+                    "precipitation": [{"value": 0.2, "probability": 1}],
+                },
+                "minutely": {
+                    "precipitation_2h": [0.1, 0.2],
+                    "probability": [1, 0.25],
+                },
             },
         },
-        ("current",),
+        ("current", "hourly", "minutely"),
         12,
         1,
     )
     expect(caiyun["current"]["humidity"] == 67, "caiyun humidity")
     expect(caiyun["current"]["weather"] == "多云", "caiyun weather")
+    expect(caiyun["hourly"][0]["precipitationProbability"] == 1, "caiyun hourly probability")
+    expect(caiyun["minutely"]["probability"][0]["probability"] == 100, "caiyun minutely probability")
 
     json_output({"ok": True, "version": VERSION, "checks": checks}, args.pretty)
     return 0
@@ -1158,7 +1458,13 @@ def parser() -> argparse.ArgumentParser:
     check.set_defaults(handler=command_check)
 
     query = subparsers.add_parser("query", help="Query weather by address or coordinates.")
-    query.add_argument("--address", help="Chinese address to geocode with AMap.")
+    query.add_argument("--address", help="Chinese city, district, or detailed address.")
+    query.add_argument(
+        "--location-type",
+        choices=("auto", "city", "address"),
+        default="auto",
+        help="Use QWeather Geo for cities or AMap for detailed addresses.",
+    )
     query.add_argument("--lng", type=float, help="Longitude; must be paired with --lat.")
     query.add_argument("--lat", type=float, help="Latitude; must be paired with --lng.")
     query.add_argument(

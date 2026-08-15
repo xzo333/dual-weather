@@ -1,6 +1,6 @@
 # OpenClaw Dual Weather
 
-一个轻量的 OpenClaw Skill。用户提供详细地址时，它会先通过高德解析坐标；已有坐标或同一会话继续追问时则直接复用。随后根据问题并行调用和风天气与彩云天气官方 API，查询该位置附近的天气详情并进行双源比较。
+一个轻量的 OpenClaw Skill。城市和区县优先使用和风 GeoAPI 定位，街道、小区、建筑等详细地址才使用高德；已有坐标或同一会话继续追问时直接复用。随后根据问题并行调用和风天气与彩云天气官方 API，查询该位置附近的天气详情并进行双源比较。
 
 本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、超时重试、字段归一化和紧凑 JSON 输出。不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。
 
@@ -70,6 +70,8 @@ python scripts/weather.py query \
   --pretty
 ```
 
+脚本会自动区分城市与详细地址；必要时可显式追加 `--location-type city` 或 `--location-type address`。
+
 复用经纬度查询空气质量和辐照：
 
 ```bash
@@ -97,7 +99,7 @@ python scripts/weather.py self-test --pretty
 4. 参考[高德申请 Key 官方说明](https://lbs.amap.com/api/webservice/guide/create-project/get-key)。
 5. 保存为 `AMAP_KEY`。
 
-高德只负责把“深圳市宝安区”这类地址转换成经度和纬度。用户已经提供坐标，或者同一会话正在继续询问已确认的地点时，可以跳过高德，因此 `AMAP_KEY` 只在需要地址解析时使用。
+高德只负责把街道、小区、建筑、医院、学校等详细地址转换成经度和纬度。城市或区县可使用和风 GeoAPI，用户已提供坐标或同一会话继续询问已确认地点时也可跳过高德。因此，只问城市天气的用户不必申请 `AMAP_KEY`。
 
 ### 和风天气
 
@@ -112,8 +114,11 @@ python scripts/weather.py self-test --pretty
 
 1. 打开[彩云天气开放平台](https://platform.caiyunapp.com/)并注册登录。
 2. 创建应用并开通 Weather API。
-3. 保存应用 Token 为 `CAIYUN_WEATHER_API_TOKEN`。
-4. 参考[彩云天气 API 文档](https://docs.caiyunapp.com/weather-api/dev.html)。
+3. 优先保存 App Key 为 `CAIYUN_APP_KEY`，App Secret 为 `CAIYUN_APP_SECRET`。
+4. 参考[彩云天气 HMAC 认证文档](https://docs.caiyunapp.com/weather-api/v2/v2.6/auth.html)。
+5. 老应用如果只有 Token，可继续使用 `CAIYUN_WEATHER_API_TOKEN` 兼容模式。
+
+脚本优先使用 App Key + App Secret，通过 HMAC-SHA256 为每次请求和重试生成新的 nonce、时间戳与签名，不会输出 App Secret。旧 Token 会嵌入 URL，因此只作为兼容回退。
 
 ## 配置 OpenClaw 会话
 
@@ -129,7 +134,8 @@ python scripts/weather.py self-test --pretty
           AMAP_KEY: "${AMAP_KEY}",
           QWEATHER_API_KEY: "${QWEATHER_API_KEY}",
           QWEATHER_BASE_URL: "${QWEATHER_BASE_URL}",
-          CAIYUN_WEATHER_API_TOKEN: "${CAIYUN_WEATHER_API_TOKEN}"
+          CAIYUN_APP_KEY: "${CAIYUN_APP_KEY}",
+          CAIYUN_APP_SECRET: "${CAIYUN_APP_SECRET}"
         }
       }
     }
@@ -154,11 +160,12 @@ python scripts/weather.py self-test --pretty
 ## 工作方式
 
 1. AI 优先调用 `scripts/weather.py`，并根据问题选择 topics。
-2. 脚本优先使用用户提供的坐标；只有收到新的详细地址时才调用高德。
-3. 脚本并行请求和风与彩云，统一温度、湿度、降水、概率和 Skycon。
-4. 脚本只向 AI 输出紧凑 JSON，避免巨大原始响应占用上下文。
-5. AI 根据结构化结果回答，并在单源失败时明确标记来源。
-6. Python 不可用或查询专业端点时，Skill 使用 curl 官方接口回退。
+2. 脚本优先使用用户提供的坐标；城市/区县走和风 GeoAPI，新的详细地址才调用高德。
+3. 脚本并行请求和风与彩云。所有和风坐标固定为两位小数；彩云小时请求向上补齐到 24 的整数倍，再按用户要求裁剪。
+4. 脚本统一温度、湿度、概率和 Skycon；和风降水量用 `precipitationAmount`（mm），彩云 `metric:v2` 降水强度用 `precipitationIntensity`（mm/h），避免混淆。
+5. 脚本只向 AI 输出紧凑 JSON，避免巨大原始响应占用上下文。
+6. AI 根据结构化结果回答，并在单源失败时明确标记来源。
+7. Python 不可用或查询专业端点时，Skill 使用 curl 官方接口回退。
 
 详细地址只是帮助定位天气网格。回答应使用“该地址附近天气”，不能声称是某栋楼或某个房间的精确天气；和风格点天气属于约 3–5 公里空间分辨率的数值模式数据。
 
