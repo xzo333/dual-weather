@@ -26,14 +26,14 @@ OpenClaw Skill 是一个目录，目录内必须有 `SKILL.md`。推荐直接克
 macOS/Linux：
 
 ```bash
-git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git \
+git clone --depth 1 https://github.com/xzo333/dual-weather.git \
   ~/.openclaw/skills/dual-weather
 ```
 
 Windows PowerShell：
 
 ```powershell
-git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git `
+git clone --depth 1 https://github.com/xzo333/dual-weather.git `
   "$HOME/.openclaw/skills/dual-weather"
 ```
 

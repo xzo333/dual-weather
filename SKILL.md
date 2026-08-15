@@ -35,14 +35,14 @@ Choose one location:
 macOS/Linux:
 
 ```bash
-git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git \
+git clone --depth 1 https://github.com/xzo333/dual-weather.git \
   ~/.openclaw/skills/dual-weather
 ```
 
 Windows PowerShell:
 
 ```powershell
-git clone --depth 1 https://github.com/xzo333/openclaw-dual-weather.git `
+git clone --depth 1 https://github.com/xzo333/dual-weather.git `
   "$HOME/.openclaw/skills/dual-weather"
 ```
 
