@@ -1,6 +1,6 @@
 ---
 name: dual-weather
-description: Query and compare QWeather and Caiyun for Chinese locations, including rain, alerts, air, indices, radiation, astronomy, setup, and API troubleshooting.
+description: "Query and compare QWeather and Caiyun for Chinese locations: rain, alerts, air, indices, radiation, astronomy, setup, troubleshooting, and commute forecasts."
 ---
 
 # Dual Weather
@@ -20,6 +20,7 @@ Prefer the bundled `scripts/weather.py` adapter for common weather topics. It us
 - Request only the endpoints and time range needed for the question. Do not download every available dataset by default.
 - Do not claim an observation, forecast, warning, typhoon impact, tide, or health conclusion that is absent from the returned JSON.
 - When QWeather alert data is shown, display the returned `alertMetadata.attributions` with the alert information. Do not remove provider attribution.
+- Treat `scripts/commute_weather.py` as an external system-scheduler entry point with message-sending side effects. Never run it automatically for a chat weather question, never use it as a substitute for `weather.py`, and never create or modify a timer unless the user explicitly asks.
 
 ## Beginner setup
 
@@ -151,6 +152,21 @@ Supported adapter topics are `current`, `hourly`, `daily`, `minutely`, `alerts`,
 The adapter routes city/district names to QWeather GeoAPI and detailed addresses to AMap. Override auto-detection with `--location-type city` or `--location-type address` only when needed. It performs parallel provider requests, gzip decoding for success and error bodies, one limited retry for transient failures, validation, unit normalization, Skycon translation, and JSON trimming. Treat stdout JSON as the factual input. Do not expose or narrate its command line. If `location.ambiguous` is true, show the short candidate list and ask the user to confirm before treating the first result as final.
 
 Use the direct HTTP workflow below when Python is unavailable, when the adapter file is missing, or when the user requests history, typhoon, tide, station, or account endpoints that are intentionally left as professional direct routes.
+
+## Optional system-scheduled commute script
+
+The installed Skill also includes `{baseDir}/scripts/commute_weather.py`. It is an optional companion for an existing OS scheduler such as cron or systemd timer, not a conversational tool and not an AI/OpenClaw scheduling mechanism.
+
+- Keep ordinary and follow-up weather questions on `{baseDir}/scripts/weather.py`.
+- Do not execute the commute script merely because a user asks about commute weather; answer interactively with `weather.py` unless the user explicitly asks to run the configured push job.
+- Do not create, replace, or edit any timer unless the user explicitly requests timer configuration.
+- Expect the commute script to call `openclaw message send` and possibly send a real enterprise-WeChat message. `COMMUTE_WEATHER_TEST=1` is a live delivery test, not a dry-run.
+- Let the user's OS scheduler continue to own timing. Installation only places the script beside `weather.py`.
+- Reuse the same QWeather host/key and Caiyun HMAC or legacy-token environment variables. The commute script imports the shared request layer so gzip handling, retries, QWeather two-decimal coordinates, and Caiyun `metric:v2` remain consistent.
+- Require Python 3.10+ and `chinese-calendar` for scheduled execution. If the dependency is missing or its calendar year is stale, the script may attempt a local pip install/upgrade and will stop rather than risk a holiday mis-send.
+- Read user-facing setup, path overrides, cron examples, and side-effect warnings from `README.md` only when the user asks to configure this optional job.
+
+Do not run an end-to-end commute test without the user's explicit approval and configured private target. Safe validation consists of compilation and tests that mock external services.
 
 ## Request workflow
 

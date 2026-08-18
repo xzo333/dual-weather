@@ -2,7 +2,7 @@
 
 一个轻量的 OpenClaw Skill。城市和区县优先使用和风 GeoAPI 定位，街道、小区、建筑等详细地址才使用高德；已有坐标或同一会话继续追问时直接复用。随后根据问题并行调用和风天气与彩云天气官方 API，查询该位置附近的天气详情并进行双源比较。
 
-本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、gzip 响应解压、超时重试、字段归一化和紧凑 JSON 输出。不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。仓库中的 `tests/` 与 `.github/workflows/` 只用于开发验证，不进入轻量安装包。
+本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、gzip 响应解压、超时重试、字段归一化和紧凑 JSON 输出；`scripts/commute_weather.py` 是可选的系统定时通勤提醒脚本。普通天气查询不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。仓库中的 `tests/` 与 `.github/workflows/` 只用于开发验证，不进入轻量安装包。
 
 ## 能做什么
 
@@ -19,7 +19,7 @@
 
 ## 安装
 
-OpenClaw Skill 是一个目录，目录内必须有 `SKILL.md`。推荐直接克隆仓库，这样会同时获得 Python 适配器。
+OpenClaw Skill 是一个目录，目录内必须有 `SKILL.md`。推荐直接克隆仓库，这样会同时获得普通查询适配器 `weather.py` 和可选通勤脚本 `commute_weather.py`，无需分别安装。
 
 ### 克隆安装
 
@@ -37,7 +37,7 @@ git clone --depth 1 https://github.com/xzo333/dual-weather.git `
   "$HOME/.openclaw/skills/dual-weather"
 ```
 
-Python 3.10+ 为推荐运行环境，但无需执行 `pip install`。如果机器没有 Python，Skill 会退回 curl 方式。
+Python 3.10+ 为推荐运行环境。普通天气查询无需执行 `pip install`；只有启用通勤提醒时才需要额外安装 `chinese-calendar`。如果机器没有 Python，普通天气查询会退回 curl 方式。
 
 安装后新建聊天会话：
 
@@ -53,7 +53,7 @@ openclaw gateway restart
 
 OpenClaw 会从工作区 `skills/`、用户管理目录和其他配置目录加载 Skill；同名 Skill 优先使用工作区版本。
 
-## Python 适配器
+## 普通对话天气适配器
 
 检查配置，不显示密钥内容：
 
@@ -88,6 +88,54 @@ python scripts/weather.py self-test --pretty
 ```
 
 脚本支持 `current`、`hourly`、`daily`、`minutely`、`alerts`、`indices`、`air`、`radiation`、`astronomy`、`grid-hourly` 和 `grid-daily`。台风、潮汐、历史、监测站与账户接口仍由 Skill 按官方专业接口直接请求，避免脚本再次膨胀成大型 Plugin。
+
+## 系统定时通勤提醒（可选）
+
+安装 Skill 时，`scripts/commute_weather.py` 会随目录一起安装。它复用 `weather.py` 的和风和彩云认证、gzip 解压、重试和 `metric:v2` 单位逻辑，但用途不同：
+
+- `weather.py` 由 AI 在普通对话查询时调用，只输出天气 JSON。
+- `commute_weather.py` 由你已有的 Linux cron、systemd timer、NAS 计划任务等系统定时器调用，并通过本机 `openclaw message send` 推送企业微信消息。
+- Skill 不会在聊天中自动运行通勤脚本，也不会替你创建或接管 OpenClaw/AI 定时任务。只有你明确要求配置系统定时器时，AI 才应协助修改定时配置。
+
+先在执行定时任务的同一 Python 环境中安装节假日日历：
+
+```bash
+python3 -m pip install --user chinese-calendar
+```
+
+默认配置文件为 `/home/node/.openclaw/.private/commute-weather.env`。创建文件并限制权限：
+
+```dotenv
+QWEATHER_API_KEY=你的和风_API_Key
+QWEATHER_BASE_URL=https://你的专属Host.qweatherapi.com
+CAIYUN_APP_KEY=你的彩云_App_Key
+CAIYUN_APP_SECRET=你的彩云_App_Secret
+WECOM_TARGET=你的企业微信接收目标
+```
+
+旧彩云应用也可用 `CAIYUN_WEATHER_API_TOKEN`；旧通勤配置名 `CAIYUN_KEY`、`QWEATHER_KEY` 仍兼容。不要把该文件提交到 Git，并在 Linux 上执行：
+
+```bash
+chmod 600 /home/node/.openclaw/.private/commute-weather.env
+```
+
+如果你的路径不同，可用这些环境变量覆盖：
+
+- `COMMUTE_WEATHER_ENV_FILE`：密钥和推送目标配置文件。
+- `COMMUTE_WEATHER_TARGET_FILE`：只保存企微接收目标的文件。
+- `COMMUTE_WEATHER_CALENDAR_ALERT_FILE`：日历错误限频状态文件。
+- `COMMUTE_WEATHER_HISTORY_FILE`：最近 30 天运行记录。
+- `COMMUTE_WEATHER_AIRPORT`、`COMMUTE_WEATHER_UNIV_TOWN`：两个通勤点的 `lng,lat`。
+
+保留现有系统定时器时，只需把执行路径指向安装后的脚本。例如每天 06:10 由 cron 检查当天早晚通勤；脚本会自行跳过休息日，并在普通周六按半天班处理：
+
+```cron
+10 6 * * * /usr/bin/python3 /home/node/.openclaw/skills/dual-weather/scripts/commute_weather.py >> /home/node/.openclaw/.state/commute-weather.log 2>&1
+```
+
+也可在定时器环境中设置 `COMMUTE_WEATHER_PERIOD=morning` 或 `evening`，分别检查早、晚通勤。`COMMUTE_WEATHER_REPORT=1` 会无论是否下雨都发送核对报告。`COMMUTE_WEATHER_TEST=1` **会立即发送一条真实测试消息**，不要把它当作无副作用的 dry-run。
+
+脚本默认通勤点和时段来自原独立脚本，其他用户启用前应修改上述坐标环境变量，并核对脚本中的通勤时间。没有真实 API 凭据和企微目标时，只做编译检查，不要直接运行端到端推送。
 
 ## 申请 API 密钥
 
@@ -177,7 +225,7 @@ python scripts/weather.py self-test --pretty
 仓库提供脱敏 API fixture，覆盖 gzip 成功响应、gzip HTTP 错误体、损坏压缩数据、新版和风预警、GeoAPI 多候选、彩云 `metric:v2` 以及小时/分钟/日级概率口径：
 
 ```bash
-python -m py_compile scripts/weather.py
+python -m py_compile scripts/weather.py scripts/commute_weather.py
 python scripts/weather.py self-test --pretty
 python -m unittest discover -s tests -v
 ```

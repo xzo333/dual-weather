@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Compile adapter
-        run: python -m py_compile scripts/weather.py
+        run: python -m py_compile scripts/weather.py scripts/commute_weather.py
       - name: Run built-in checks
         run: python scripts/weather.py self-test --pretty
       - name: Run API fixture tests
