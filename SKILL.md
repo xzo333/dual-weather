@@ -163,7 +163,7 @@ The installed Skill also includes `{baseDir}/scripts/commute_weather.py`. It is 
 - Expect the commute script to call `openclaw message send` and possibly send a real enterprise-WeChat message. `COMMUTE_WEATHER_TEST=1` is a live delivery test, not a dry-run.
 - Let the user's OS scheduler continue to own timing. Installation only places the script beside `weather.py`.
 - Reuse the same QWeather host/key and Caiyun HMAC or legacy-token environment variables. The commute script imports the shared request layer so gzip handling, retries, QWeather two-decimal coordinates, and Caiyun `metric:v2` remain consistent.
-- Require Python 3.10+ and `chinese-calendar` for scheduled execution. If the dependency is missing or its calendar year is stale, the script may attempt a local pip install/upgrade and will stop rather than risk a holiday mis-send.
+- Require only Python 3.10+ and the bundled `scripts/vendor/chinese_calendar-1.11.0-py2.py3-none-any.whl` for scheduled execution. Never run pip or modify site-packages. If the bundled calendar is missing or does not cover the requested year, stop with a clear upgrade instruction rather than risk a holiday mis-send.
 - Read user-facing setup, path overrides, cron examples, and side-effect warnings from `README.md` only when the user asks to configure this optional job.
 
 Do not run an end-to-end commute test without the user's explicit approval and configured private target. Safe validation consists of compilation and tests that mock external services.

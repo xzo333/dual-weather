@@ -2,7 +2,7 @@
 
 一个轻量的 OpenClaw Skill。城市和区县优先使用和风 GeoAPI 定位，街道、小区、建筑等详细地址才使用高德；已有坐标或同一会话继续追问时直接复用。随后根据问题并行调用和风天气与彩云天气官方 API，查询该位置附近的天气详情并进行双源比较。
 
-本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、gzip 响应解压、超时重试、字段归一化和紧凑 JSON 输出；`scripts/commute_weather.py` 是可选的系统定时通勤提醒脚本。普通天气查询不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；没有 Python 时仍可按 Skill 使用 curl 回退。仓库中的 `tests/` 与 `.github/workflows/` 只用于开发验证，不进入轻量安装包。
+本项目仍是轻量 Skill：`SKILL.md` 负责路由和回答规则，`scripts/weather.py` 使用 Python 标准库稳定完成地址解析、双源并发、gzip 响应解压、超时重试、字段归一化和紧凑 JSON 输出；`scripts/commute_weather.py` 是可选的系统定时通勤提醒脚本。普通天气查询不依赖 MCP、Plugin、Node.js、npm、pip 或第三方 Python 包；通勤脚本所需的节假日日历已作为约 11 KB 的私有 wheel 随 Skill 打包，不需要系统安装权限。没有 Python 时，普通天气查询仍可按 Skill 使用 curl 回退。仓库中的 `tests/` 与 `.github/workflows/` 只用于开发验证，不进入轻量安装包。
 
 ## 能做什么
 
@@ -37,7 +37,7 @@ git clone --depth 1 https://github.com/xzo333/dual-weather.git `
   "$HOME/.openclaw/skills/dual-weather"
 ```
 
-Python 3.10+ 为推荐运行环境。普通天气查询无需执行 `pip install`；只有启用通勤提醒时才需要额外安装 `chinese-calendar`。如果机器没有 Python，普通天气查询会退回 curl 方式。
+Python 3.10+ 为推荐运行环境，无需执行 `pip install`。通勤脚本会直接从 Skill 内的 `scripts/vendor/chinese_calendar-1.11.0-py2.py3-none-any.whl` 加载日历，不写入系统 Python、用户 site-packages 或容器环境。如果机器没有 Python，普通天气查询会退回 curl 方式，但系统定时通勤脚本无法运行。
 
 安装后新建聊天会话：
 
@@ -97,11 +97,7 @@ python scripts/weather.py self-test --pretty
 - `commute_weather.py` 由你已有的 Linux cron、systemd timer、NAS 计划任务等系统定时器调用，并通过本机 `openclaw message send` 推送企业微信消息。
 - Skill 不会在聊天中自动运行通勤脚本，也不会替你创建或接管 OpenClaw/AI 定时任务。只有你明确要求配置系统定时器时，AI 才应协助修改定时配置。
 
-先在执行定时任务的同一 Python 环境中安装节假日日历：
-
-```bash
-python3 -m pip install --user chinese-calendar
-```
+节假日日历已随 Skill 打包，不需要 root、管理员权限或 `pip install`。内置 `chinese-calendar 1.11.0` 覆盖 2004–2026 年中国法定节假日和调休安排；进入新年份且内置数据尚未覆盖时，脚本会明确失败并要求升级 Skill，不会自行修改主机环境。
 
 默认配置文件为 `/home/node/.openclaw/.private/commute-weather.env`。创建文件并限制权限：
 
@@ -123,7 +119,6 @@ chmod 600 /home/node/.openclaw/.private/commute-weather.env
 
 - `COMMUTE_WEATHER_ENV_FILE`：密钥和推送目标配置文件。
 - `COMMUTE_WEATHER_TARGET_FILE`：只保存企微接收目标的文件。
-- `COMMUTE_WEATHER_CALENDAR_ALERT_FILE`：日历错误限频状态文件。
 - `COMMUTE_WEATHER_HISTORY_FILE`：最近 30 天运行记录。
 - `COMMUTE_WEATHER_AIRPORT`、`COMMUTE_WEATHER_UNIV_TOWN`：两个通勤点的 `lng,lat`。
 
@@ -222,7 +217,7 @@ chmod 600 /home/node/.openclaw/.private/commute-weather.env
 
 ## 开发验证
 
-仓库提供脱敏 API fixture，覆盖 gzip 成功响应、gzip HTTP 错误体、损坏压缩数据、新版和风预警、GeoAPI 多候选、彩云 `metric:v2` 以及小时/分钟/日级概率口径：
+仓库提供脱敏 API fixture，覆盖 gzip 成功响应、gzip HTTP 错误体、损坏压缩数据、新版和风预警、GeoAPI 多候选、彩云 `metric:v2`、小时/分钟/日级概率口径，以及通勤脚本的内置节假日日历加载：
 
 ```bash
 python -m py_compile scripts/weather.py scripts/commute_weather.py

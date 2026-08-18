@@ -3,7 +3,15 @@ import json
 import subprocess
 import os
 import sys
-import time
+
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+VENDORED_CALENDAR_WHEEL = os.path.join(
+    SCRIPT_DIR, "vendor", "chinese_calendar-1.11.0-py2.py3-none-any.whl"
+)
+if os.path.isfile(VENDORED_CALENDAR_WHEEL):
+    # Keep the scheduled job self-contained when the host cannot install packages.
+    sys.path.insert(0, VENDORED_CALENDAR_WHEEL)
 
 try:
     from weather import (
@@ -19,12 +27,22 @@ except ImportError as error:
     ) from error
 
 try:
-    from chinese_calendar import get_holiday_detail, is_workday
+    import chinese_calendar as _calendar
+
+    get_holiday_detail = _calendar.get_holiday_detail
+    is_workday = _calendar.is_workday
     CALENDAR_IMPORT_ERROR = None
+    calendar_module_file = os.path.abspath(getattr(_calendar, "__file__", ""))
+    CALENDAR_SOURCE = (
+        "bundled"
+        if os.path.abspath(VENDORED_CALENDAR_WHEEL) in calendar_module_file
+        else "system"
+    )
 except ImportError as error:
     get_holiday_detail = None
     is_workday = None
     CALENDAR_IMPORT_ERROR = error
+    CALENDAR_SOURCE = "unavailable"
 
 # ==================== 配置区 ====================
 ENV_FILE = os.environ.get(
@@ -34,17 +52,11 @@ WECOM_TARGET_FILE = os.environ.get(
     "COMMUTE_WEATHER_TARGET_FILE",
     "/home/node/.openclaw/workspace/.private/commute-weather-target",
 )
-CALENDAR_ALERT_FILE = os.environ.get(
-    "COMMUTE_WEATHER_CALENDAR_ALERT_FILE",
-    "/home/node/.openclaw/workspace/.state/commute-weather-calendar-alert",
-)
 HISTORY_FILE = os.environ.get(
     "COMMUTE_WEATHER_HISTORY_FILE",
     "/home/node/.openclaw/workspace/.state/commute-weather-history.jsonl",
 )
 HISTORY_RETENTION_DAYS = 30
-CALENDAR_PACKAGE = "chinese-calendar"
-CALENDAR_ALERT_INTERVAL = 7 * 24 * 60 * 60
 CAIYUN_KEY = os.environ.get("CAIYUN_WEATHER_API_TOKEN", "")
 QWEATHER_KEY = os.environ.get("QWEATHER_API_KEY", "")
 WECOM_TARGET = os.environ.get("WECOM_TARGET", "")
@@ -200,75 +212,20 @@ def send_via_openclaw(message):
     )
     print(f"[{datetime.datetime.now()}] 消息已成功推送至企微。")
 
-def should_send_calendar_alert(alert_key):
-    """同类日历故障最多每 7 天提醒一次。"""
-    try:
-        with open(CALENDAR_ALERT_FILE, "r") as alert_file:
-            saved_key, saved_time = alert_file.read().strip().split("|", 1)
-        if saved_key == alert_key and time.time() - float(saved_time) < CALENDAR_ALERT_INTERVAL:
-            return False
-    except (FileNotFoundError, OSError, ValueError):
-        pass
-    return True
-
-def record_calendar_alert(alert_key):
-    os.makedirs(os.path.dirname(CALENDAR_ALERT_FILE), exist_ok=True)
-    with open(CALENDAR_ALERT_FILE, "w") as alert_file:
-        alert_file.write(f"{alert_key}|{time.time()}")
-
-def notify_calendar_failure(alert_key, detail):
-    """通知一次并让定时任务以失败状态退出。"""
-    if should_send_calendar_alert(alert_key):
-        send_via_openclaw(
-            "通勤天气任务异常\n\n"
-            f"节假日日历不可用：{detail}\n"
-            "已停止本次天气判断，避免节假日误提醒。请检查 chinese-calendar。"
-        )
-        record_calendar_alert(alert_key)
-    raise RuntimeError(detail)
-
-def install_or_upgrade_calendar(upgrade=False):
-    """容器升级导致依赖丢失或日历过期时，尝试自动修复。"""
-    command = [sys.executable, "-m", "pip", "install", "--user"]
-    if upgrade:
-        command.append("--upgrade")
-    command.append(CALENDAR_PACKAGE)
-    subprocess.run(command, check=True, timeout=120)
-
-def load_calendar_package(upgrade=False):
-    global get_holiday_detail, is_workday, CALENDAR_IMPORT_ERROR
-    install_or_upgrade_calendar(upgrade=upgrade)
-    import importlib
-    import sys as runtime_sys
-
-    importlib.invalidate_caches()
-    for module_name in list(runtime_sys.modules):
-        if module_name == "chinese_calendar" or module_name.startswith("chinese_calendar."):
-            del runtime_sys.modules[module_name]
-    chinese_calendar = importlib.import_module("chinese_calendar")
-    get_holiday_detail = chinese_calendar.get_holiday_detail
-    is_workday = chinese_calendar.is_workday
-    CALENDAR_IMPORT_ERROR = None
-
 def ensure_calendar_available(target_date):
-    """确保依赖存在且包含目标年份；必要时自动安装或升级。"""
+    """确保随 Skill 打包的节假日日历可处理目标年份，不修改主机环境。"""
     if CALENDAR_IMPORT_ERROR is not None:
-        try:
-            load_calendar_package()
-        except Exception as error:
-            notify_calendar_failure("package-missing", f"依赖缺失且自动安装失败：{error}")
+        raise RuntimeError(
+            "chinese-calendar 未加载；请确认 Skill 安装包含 scripts/vendor/*.whl"
+        ) from CALENDAR_IMPORT_ERROR
 
     try:
         is_workday(target_date)
     except NotImplementedError:
-        try:
-            load_calendar_package(upgrade=True)
-            is_workday(target_date)
-        except Exception as error:
-            notify_calendar_failure(
-                f"year-{target_date.year}",
-                f"当前日历数据不支持 {target_date.year} 年，自动升级后仍不可用：{error}",
-            )
+        raise RuntimeError(
+            f"内置 chinese-calendar 尚未包含 {target_date.year} 年的法定节假日安排；"
+            "请升级 dual-weather Skill，或改用已支持的日期。"
+        )
 
 def get_caiyun_hourly(location, hourly_steps=24):
     """获取未来 24 小时通勤相关数据，按日期和小时索引。"""

@@ -28,7 +28,7 @@ import uuid
 from typing import Any, Callable
 
 
-VERSION = "0.14.0"
+VERSION = "0.14.1"
 RETRYABLE_HTTP = {429, 502, 503, 504}
 MAX_HTTP_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_TOPICS = ("current", "hourly", "minutely", "alerts")
